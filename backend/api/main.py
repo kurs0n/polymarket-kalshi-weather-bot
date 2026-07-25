@@ -1,28 +1,24 @@
-"""FastAPI backend for BTC 5-min trading bot dashboard."""
+"""FastAPI backend for weather temperature trading bot dashboard."""
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Optional
 import asyncio
-import json
 import os
 
 from backend.config import settings
 from backend.models.database import (
     get_db, init_db, SessionLocal,
-    Signal, Trade, BotState, AILog, ScanLog
+    Signal, Trade, BotState, AILog
 )
-from backend.core.signals import scan_for_signals, TradingSignal
-from backend.data.btc_markets import fetch_active_btc_markets, BtcMarket
-from backend.data.crypto import fetch_crypto_price, compute_btc_microstructure
 
 from pydantic import BaseModel
 
 app = FastAPI(
-    title="BTC 5-Min Trading Bot",
-    description="Polymarket BTC Up/Down 5-minute market trading bot",
-    version="3.0.0"
+    title="Weather Trading Bot",
+    description="Polymarket + Kalshi weather temperature market trading bot",
+    version="4.0.0"
 )
 
 app.add_middleware(
@@ -34,7 +30,6 @@ app.add_middleware(
 )
 
 
-# WebSocket connection manager
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -56,62 +51,6 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
-
-
-# Pydantic response models
-class BtcPriceResponse(BaseModel):
-    price: float
-    change_24h: float
-    change_7d: float
-    market_cap: float
-    volume_24h: float
-    last_updated: datetime
-
-
-class BtcWindowResponse(BaseModel):
-    slug: str
-    market_id: str
-    up_price: float
-    down_price: float
-    window_start: datetime
-    window_end: datetime
-    volume: float
-    is_active: bool
-    is_upcoming: bool
-    time_until_end: float
-    spread: float
-
-
-class MicrostructureResponse(BaseModel):
-    rsi: float = 50.0
-    momentum_1m: float = 0.0
-    momentum_5m: float = 0.0
-    momentum_15m: float = 0.0
-    vwap_deviation: float = 0.0
-    sma_crossover: float = 0.0
-    volatility: float = 0.0
-    price: float = 0.0
-    source: str = "unknown"
-
-
-class SignalResponse(BaseModel):
-    market_ticker: str
-    market_title: str
-    platform: str
-    direction: str
-    model_probability: float
-    market_probability: float
-    edge: float
-    confidence: float
-    suggested_size: float
-    reasoning: str
-    timestamp: datetime
-    category: str = "crypto"
-    event_slug: Optional[str] = None
-    btc_price: float = 0.0
-    btc_change_24h: float = 0.0
-    window_end: Optional[datetime] = None
-    actionable: bool = False
 
 
 class TradeResponse(BaseModel):
@@ -200,14 +139,11 @@ class WeatherSignalResponse(BaseModel):
     ensemble_std: float
     ensemble_members: int
     actionable: bool = False
+    platform: str = "polymarket"
 
 
 class DashboardData(BaseModel):
     stats: BotStats
-    btc_price: Optional[BtcPriceResponse]
-    microstructure: Optional[MicrostructureResponse] = None
-    windows: List[BtcWindowResponse]
-    active_signals: List[SignalResponse]
     recent_trades: List[TradeResponse]
     equity_curve: List[dict]
     calibration: Optional[CalibrationSummary] = None
@@ -222,11 +158,10 @@ class EventResponse(BaseModel):
     data: dict = {}
 
 
-# Startup / Shutdown
 @app.on_event("startup")
 async def startup():
     print("=" * 60)
-    print("BTC 5-MIN TRADING BOT v3.0")
+    print("WEATHER TRADING BOT v4.0")
     print("=" * 60)
     print("Initializing database...")
 
@@ -256,24 +191,21 @@ async def startup():
     print("")
     print("Configuration:")
     print(f"  - Simulation mode: {settings.SIMULATION_MODE}")
-    print(f"  - Min edge threshold: {settings.MIN_EDGE_THRESHOLD:.0%}")
+    print(f"  - Min edge threshold: {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%}")
     print(f"  - Kelly fraction: {settings.KELLY_FRACTION:.0%}")
-    print(f"  - Scan interval: {settings.SCAN_INTERVAL_SECONDS}s")
+    print(f"  - Scan interval: {settings.WEATHER_SCAN_INTERVAL_SECONDS}s")
     print(f"  - Settlement interval: {settings.SETTLEMENT_INTERVAL_SECONDS}s")
+    print(f"  - Cities: {settings.WEATHER_CITIES}")
+    print(f"  - Kalshi enabled: {settings.KALSHI_ENABLED}")
     print("")
 
     from backend.core.scheduler import start_scheduler, log_event
     start_scheduler()
-    log_event("success", "BTC 5-min trading bot initialized")
+    log_event("success", "Weather trading bot initialized")
 
     print("Bot is now running!")
-    print(f"  - BTC scan: every {settings.SCAN_INTERVAL_SECONDS}s (edge >= {settings.MIN_EDGE_THRESHOLD:.0%})")
+    print(f"  - Weather scan: every {settings.WEATHER_SCAN_INTERVAL_SECONDS}s (edge >= {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%})")
     print(f"  - Settlement check: every {settings.SETTLEMENT_INTERVAL_SECONDS}s")
-    if settings.WEATHER_ENABLED:
-        print(f"  - Weather scan: every {settings.WEATHER_SCAN_INTERVAL_SECONDS}s (edge >= {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%})")
-        print(f"  - Weather cities: {settings.WEATHER_CITIES}")
-    else:
-        print("  - Weather trading: DISABLED")
     print("=" * 60)
 
 
@@ -283,10 +215,13 @@ async def shutdown():
     stop_scheduler()
 
 
-# Core endpoints
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "BTC 5-Min Trading Bot API v3.0", "simulation_mode": settings.SIMULATION_MODE}
+    return {
+        "status": "ok",
+        "message": "Weather Trading Bot API v4.0",
+        "simulation_mode": settings.SIMULATION_MODE
+    }
 
 
 @app.get("/api/health")
@@ -310,95 +245,6 @@ async def get_stats(db: Session = Depends(get_db)):
         total_pnl=state.total_pnl,
         is_running=state.is_running,
         last_run=state.last_run
-    )
-
-
-# BTC-specific endpoints
-@app.get("/api/btc/price", response_model=Optional[BtcPriceResponse])
-async def get_btc_price():
-    """Get current BTC price and momentum data."""
-    try:
-        btc = await fetch_crypto_price("BTC")
-        if not btc:
-            return None
-
-        return BtcPriceResponse(
-            price=btc.current_price,
-            change_24h=btc.change_24h,
-            change_7d=btc.change_7d,
-            market_cap=btc.market_cap,
-            volume_24h=btc.volume_24h,
-            last_updated=btc.last_updated
-        )
-    except Exception:
-        return None
-
-
-@app.get("/api/btc/windows", response_model=List[BtcWindowResponse])
-async def get_btc_windows():
-    """Get upcoming BTC 5-min windows with prices."""
-    try:
-        markets = await fetch_active_btc_markets()
-        return [
-            BtcWindowResponse(
-                slug=m.slug,
-                market_id=m.market_id,
-                up_price=m.up_price,
-                down_price=m.down_price,
-                window_start=m.window_start,
-                window_end=m.window_end,
-                volume=m.volume,
-                is_active=m.is_active,
-                is_upcoming=m.is_upcoming,
-                time_until_end=m.time_until_end,
-                spread=m.spread,
-            )
-            for m in markets
-        ]
-    except Exception:
-        return []
-
-
-@app.get("/api/signals", response_model=List[SignalResponse])
-async def get_signals():
-    """Get current BTC trading signals."""
-    try:
-        signals = await scan_for_signals()
-        return [_signal_to_response(s) for s in signals]
-    except Exception:
-        return []
-
-
-@app.get("/api/signals/actionable", response_model=List[SignalResponse])
-async def get_actionable_signals():
-    """Get only signals that pass the edge threshold."""
-    try:
-        signals = await scan_for_signals()
-        actionable = [s for s in signals if s.passes_threshold]
-        return [_signal_to_response(s) for s in actionable]
-    except Exception:
-        return []
-
-
-def _signal_to_response(s: TradingSignal, actionable: bool = False) -> SignalResponse:
-    return SignalResponse(
-        market_ticker=s.market.market_id,
-        market_title=f"BTC 5m - {s.market.slug}",
-        platform="polymarket",
-        direction=s.direction,
-        model_probability=s.model_probability,
-        market_probability=s.market_probability,
-        edge=s.edge,
-        confidence=s.confidence,
-        suggested_size=s.suggested_size,
-        reasoning=s.reasoning,
-        timestamp=s.timestamp,
-        category="crypto",
-        event_slug=s.market.slug,
-        btc_price=s.btc_price,
-        btc_change_24h=s.btc_change_24h,
-        window_end=s.market.window_end,
-        actionable=actionable,
     )
 
 
@@ -455,8 +301,9 @@ async def get_equity_curve(db: Session = Depends(get_db)):
 @app.post("/api/simulate-trade")
 async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
     from backend.core.scheduler import log_event
+    from backend.core.weather_signals import scan_for_weather_signals
 
-    signals = await scan_for_signals()
+    signals = await scan_for_weather_signals()
     signal = next((s for s in signals if s.market.market_id == signal_ticker), None)
 
     if not signal:
@@ -466,15 +313,16 @@ async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
     if not state:
         raise HTTPException(status_code=500, detail="Bot state not initialized")
 
-    entry_price = signal.market.up_price if signal.direction == "up" else signal.market.down_price
+    entry_price = signal.market.yes_price if signal.direction == "yes" else signal.market.no_price
 
     trade = Trade(
         market_ticker=signal.market.market_id,
-        platform="polymarket",
+        platform=signal.market.platform,
         event_slug=signal.market.slug,
+        market_type="weather",
         direction=signal.direction,
         entry_price=entry_price,
-        size=min(signal.suggested_size, state.bankroll * 0.05),
+        size=min(signal.suggested_size, state.bankroll * 0.05, settings.WEATHER_MAX_TRADE_SIZE),
         model_probability=signal.model_probability,
         market_price_at_entry=signal.market_probability,
         edge_at_entry=signal.edge
@@ -484,7 +332,7 @@ async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
     state.total_trades += 1
     db.commit()
 
-    log_event("trade", f"Manual BTC trade: {signal.direction.upper()} {signal.market.slug}")
+    log_event("trade", f"Manual weather trade: {signal.direction.upper()} {signal.market.city_name}")
     return {"status": "ok", "trade_id": trade.id, "size": trade.size}
 
 
@@ -497,32 +345,21 @@ async def run_scan(db: Session = Depends(get_db)):
         state.last_run = datetime.utcnow()
         db.commit()
 
-    log_event("info", "Manual scan triggered (BTC + Weather)")
+    log_event("info", "Manual weather scan triggered")
     await run_manual_scan()
 
-    signals = await scan_for_signals()
-    actionable = [s for s in signals if s.passes_threshold]
+    from backend.core.weather_signals import scan_for_weather_signals
+    wx_signals = await scan_for_weather_signals()
+    wx_actionable = [s for s in wx_signals if s.passes_threshold]
 
-    result = {
+    return {
         "status": "ok",
-        "total_signals": len(signals),
-        "actionable_signals": len(actionable),
+        "weather_signals": len(wx_signals),
+        "weather_actionable": len(wx_actionable),
+        "total_signals": len(wx_signals),
+        "actionable_signals": len(wx_actionable),
         "timestamp": datetime.utcnow().isoformat(),
     }
-
-    # Also run weather scan if enabled
-    if settings.WEATHER_ENABLED:
-        try:
-            from backend.core.weather_signals import scan_for_weather_signals
-            wx_signals = await scan_for_weather_signals()
-            wx_actionable = [s for s in wx_signals if s.passes_threshold]
-            result["weather_signals"] = len(wx_signals)
-            result["weather_actionable"] = len(wx_actionable)
-        except Exception:
-            result["weather_signals"] = 0
-            result["weather_actionable"] = 0
-
-    return result
 
 
 @app.post("/api/settle-trades")
@@ -564,17 +401,13 @@ def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
     accuracy = correct / total_with_outcome if total_with_outcome > 0 else 0.0
 
     avg_predicted_edge = sum(abs(s.edge) for s in settled_signals) / total_with_outcome
-    # Actual edge: for correct predictions, edge was real; for incorrect, edge was negative
     avg_actual_edge = sum(
         abs(s.edge) if s.outcome_correct else -abs(s.edge)
         for s in settled_signals
     ) / total_with_outcome
 
-    # Brier score: mean squared error of probability forecasts
-    # For each signal: (predicted_prob - actual_outcome)^2
     brier_sum = 0.0
     for s in settled_signals:
-        # Model probability is for UP; actual is 1.0 if UP won, 0.0 if DOWN won
         actual = s.settlement_value if s.settlement_value is not None else 0.5
         brier_sum += (s.model_probability - actual) ** 2
     brier_score = brier_sum / total_with_outcome
@@ -597,12 +430,10 @@ async def get_calibration(db: Session = Depends(get_db)):
     if not signals:
         return {"buckets": [], "summary": None}
 
-    # Bucket signals by model_probability into 5% bins
     from collections import defaultdict
     buckets_data = defaultdict(lambda: {"predicted_sum": 0.0, "correct": 0, "total": 0})
 
     for s in signals:
-        # Bin by 5% increments
         bin_start = int(s.model_probability * 100 // 5) * 5
         bin_end = bin_start + 5
         bucket_key = f"{bin_start}-{bin_end}%"
@@ -627,7 +458,6 @@ async def get_calibration(db: Session = Depends(get_db)):
     return {"buckets": buckets, "summary": summary}
 
 
-# Kalshi endpoints
 @app.get("/api/kalshi/status")
 async def get_kalshi_status():
     """Test Kalshi API authentication and return connection status."""
@@ -653,7 +483,6 @@ async def get_kalshi_status():
         }
 
 
-# Weather endpoints
 @app.get("/api/weather/forecasts", response_model=List[WeatherForecastResponse])
 async def get_weather_forecasts():
     """Get ensemble forecasts for configured cities."""
@@ -662,7 +491,6 @@ async def get_weather_forecasts():
 
     try:
         from backend.data.weather import fetch_ensemble_forecast, CITY_CONFIG
-        from datetime import date
 
         city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
         forecasts = []
@@ -701,7 +529,6 @@ async def get_weather_markets():
         city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
         markets = await fetch_polymarket_weather_markets(city_keys)
 
-        # Also fetch Kalshi markets if enabled
         if settings.KALSHI_ENABLED:
             try:
                 from backend.data.kalshi_client import kalshi_credentials_present
@@ -768,6 +595,7 @@ def _weather_signal_to_response(s) -> WeatherSignalResponse:
         ensemble_std=s.ensemble_std,
         ensemble_members=s.ensemble_members,
         actionable=s.passes_threshold,
+        platform=s.market.platform,
     )
 
 
@@ -786,7 +614,6 @@ async def get_events(limit: int = 50):
     ]
 
 
-# Bot control
 @app.post("/api/bot/start")
 async def start_bot(db: Session = Depends(get_db)):
     from backend.core.scheduler import start_scheduler, log_event, is_scheduler_running
@@ -799,7 +626,7 @@ async def start_bot(db: Session = Depends(get_db)):
     if not is_scheduler_running():
         start_scheduler()
 
-    log_event("success", "Trading bot started")
+    log_event("success", "Weather trading bot started")
     return {"status": "started", "is_running": True}
 
 
@@ -852,80 +679,6 @@ async def get_dashboard(db: Session = Depends(get_db)):
     """Get all dashboard data in one call."""
     stats = await get_stats(db)
 
-    # Fetch BTC price from microstructure first, fallback to CoinGecko
-    btc_price_data = None
-    micro_data = None
-    try:
-        micro = await compute_btc_microstructure()
-        if micro:
-            micro_data = MicrostructureResponse(
-                rsi=micro.rsi,
-                momentum_1m=micro.momentum_1m,
-                momentum_5m=micro.momentum_5m,
-                momentum_15m=micro.momentum_15m,
-                vwap_deviation=micro.vwap_deviation,
-                sma_crossover=micro.sma_crossover,
-                volatility=micro.volatility,
-                price=micro.price,
-                source=micro.source,
-            )
-            btc_price_data = BtcPriceResponse(
-                price=micro.price,
-                change_24h=micro.momentum_15m * 96,  # rough extrapolation
-                change_7d=0,
-                market_cap=0,
-                volume_24h=0,
-                last_updated=datetime.utcnow(),
-            )
-    except Exception:
-        pass
-    if not btc_price_data:
-        try:
-            btc = await fetch_crypto_price("BTC")
-            if btc:
-                btc_price_data = BtcPriceResponse(
-                    price=btc.current_price,
-                    change_24h=btc.change_24h,
-                    change_7d=btc.change_7d,
-                    market_cap=btc.market_cap,
-                    volume_24h=btc.volume_24h,
-                    last_updated=btc.last_updated
-                )
-        except Exception:
-            pass
-
-    # Fetch windows
-    windows = []
-    try:
-        markets = await fetch_active_btc_markets()
-        windows = [
-            BtcWindowResponse(
-                slug=m.slug,
-                market_id=m.market_id,
-                up_price=m.up_price,
-                down_price=m.down_price,
-                window_start=m.window_start,
-                window_end=m.window_end,
-                volume=m.volume,
-                is_active=m.is_active,
-                is_upcoming=m.is_upcoming,
-                time_until_end=m.time_until_end,
-                spread=m.spread,
-            )
-            for m in markets
-        ]
-    except Exception:
-        pass
-
-    # Signals — return ALL signals, mark which are actionable
-    signals = []
-    try:
-        raw_signals = await scan_for_signals()
-        signals = [_signal_to_response(s, actionable=s.passes_threshold) for s in raw_signals]
-    except Exception:
-        pass
-
-    # Recent trades
     trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(50).all()
     recent_trades = [
         TradeResponse(
@@ -944,7 +697,6 @@ async def get_dashboard(db: Session = Depends(get_db)):
         for t in trades
     ]
 
-    # Equity curve
     equity_trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
     equity_curve = []
     cumulative_pnl = 0
@@ -957,10 +709,8 @@ async def get_dashboard(db: Session = Depends(get_db)):
                 "bankroll": settings.INITIAL_BANKROLL + cumulative_pnl
             })
 
-    # Calibration summary
     calibration = _compute_calibration_summary(db)
 
-    # Weather data (if enabled)
     weather_signals_data = []
     weather_forecasts_data = []
     if settings.WEATHER_ENABLED:
@@ -993,10 +743,6 @@ async def get_dashboard(db: Session = Depends(get_db)):
 
     return DashboardData(
         stats=stats,
-        btc_price=btc_price_data,
-        microstructure=micro_data,
-        windows=windows,
-        active_signals=signals,
         recent_trades=recent_trades,
         equity_curve=equity_curve,
         calibration=calibration,
@@ -1013,7 +759,7 @@ async def websocket_events(websocket: WebSocket):
         await websocket.send_json({
             "timestamp": datetime.utcnow().isoformat(),
             "type": "success",
-            "message": "Connected to BTC trading bot"
+            "message": "Connected to weather trading bot"
         })
 
         from backend.core.scheduler import get_recent_events

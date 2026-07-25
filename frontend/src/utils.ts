@@ -1,5 +1,5 @@
 /**
- * Utility functions for the BTC 5-min trading bot dashboard
+ * Utility functions for the weather trading bot dashboard
  */
 
 export function getMarketUrl(platform: string, ticker: string, eventSlug?: string): string {

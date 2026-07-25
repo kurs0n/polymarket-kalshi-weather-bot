@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from backend.config import settings
-from backend.core.signals import calculate_edge, calculate_kelly_size
+from backend.core.sizing import calculate_edge, calculate_kelly_size
 from backend.data.weather import fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG
 from backend.data.weather_markets import WeatherMarket, fetch_polymarket_weather_markets
 from backend.models.database import SessionLocal, Signal

@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { DashboardData, Signal, Trade, BotStats, BtcPrice, BtcWindow, WeatherForecast, WeatherSignal } from './types'
+import type { DashboardData, Trade, BotStats, WeatherForecast, WeatherSignal } from './types'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -9,21 +9,6 @@ const api = axios.create({
 
 export async function fetchDashboard(): Promise<DashboardData> {
   const { data } = await api.get<DashboardData>('/dashboard')
-  return data
-}
-
-export async function fetchSignals(): Promise<Signal[]> {
-  const { data } = await api.get<Signal[]>('/signals')
-  return data
-}
-
-export async function fetchBtcPrice(): Promise<BtcPrice | null> {
-  const { data } = await api.get<BtcPrice | null>('/btc/price')
-  return data
-}
-
-export async function fetchBtcWindows(): Promise<BtcWindow[]> {
-  const { data } = await api.get<BtcWindow[]>('/btc/windows')
   return data
 }
 

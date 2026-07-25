@@ -1,11 +1,10 @@
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { useState, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import type { Signal, WeatherSignal } from '../types'
+import type { WeatherSignal } from '../types'
 import { platformStyles } from '../utils'
 
 interface Props {
-  signals: Signal[]
   weatherSignals: WeatherSignal[]
   onSimulateTrade: (ticker: string) => void
   isSimulating: boolean
@@ -19,7 +18,6 @@ interface UnifiedSignal {
   ticker: string
   title: string
   platform: string
-  category: 'BTC' | 'WX'
   direction: string
   edge: number
   modelProb: number
@@ -40,12 +38,6 @@ function PlatformBadge({ platform }: { platform: string }) {
   )
 }
 
-function CategoryBadge({ category }: { category: 'BTC' | 'WX' }) {
-  return category === 'BTC'
-    ? <span className="text-[8px] font-bold px-1 py-0.5 bg-amber-500/10 text-amber-500 border border-amber-500/20">BTC</span>
-    : <span className="text-[8px] font-bold px-1 py-0.5 bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">WX</span>
-}
-
 function EdgeBar({ edge }: { edge: number }) {
   const absEdge = Math.abs(edge) * 100
   const width = Math.min(100, absEdge * 5)
@@ -57,34 +49,17 @@ function EdgeBar({ edge }: { edge: number }) {
   )
 }
 
-export function SignalsTable({ signals, weatherSignals, onSimulateTrade, isSimulating }: Props) {
+export function SignalsTable({ weatherSignals, onSimulateTrade, isSimulating }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>('edge')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
 
   const unified: UnifiedSignal[] = useMemo(() => {
-    const btc: UnifiedSignal[] = signals.map(s => ({
-      key: `btc-${s.market_ticker}`,
-      ticker: s.market_ticker,
-      title: (s.event_slug || s.market_ticker).replace('btc-updown-5m-', ''),
-      platform: s.platform || 'polymarket',
-      category: 'BTC',
-      direction: s.direction,
-      edge: s.edge,
-      modelProb: s.model_probability,
-      marketProb: s.market_probability,
-      confidence: s.confidence,
-      suggestedSize: s.suggested_size,
-      reasoning: s.reasoning,
-      actionable: s.actionable,
-    }))
-
-    const wx: UnifiedSignal[] = weatherSignals.map(s => ({
+    return weatherSignals.map(s => ({
       key: `wx-${s.market_id}`,
       ticker: s.market_id,
       title: `${s.city_name} ${s.metric} ${s.direction} ${s.threshold_f}F`,
       platform: s.platform || 'kalshi',
-      category: 'WX',
       direction: s.direction,
       edge: s.edge,
       modelProb: s.model_probability,
@@ -94,9 +69,7 @@ export function SignalsTable({ signals, weatherSignals, onSimulateTrade, isSimul
       reasoning: s.reasoning,
       actionable: s.actionable,
     }))
-
-    return [...btc, ...wx]
-  }, [signals, weatherSignals])
+  }, [weatherSignals])
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -127,14 +100,14 @@ export function SignalsTable({ signals, weatherSignals, onSimulateTrade, isSimul
   const SortIcon = ({ column }: { column: SortKey }) => {
     if (sortKey !== column) return <ArrowUpDown className="w-2.5 h-2.5 text-neutral-600" />
     return sortDir === 'asc'
-      ? <ArrowUp className="w-2.5 h-2.5 text-amber-500" />
-      : <ArrowDown className="w-2.5 h-2.5 text-amber-500" />
+      ? <ArrowUp className="w-2.5 h-2.5 text-cyan-400" />
+      : <ArrowDown className="w-2.5 h-2.5 text-cyan-400" />
   }
 
   if (unified.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-8 text-neutral-600">
-        <p className="text-xs">No signals generated</p>
+        <p className="text-xs">No weather signals</p>
         <p className="text-[10px] mt-0.5 text-neutral-700">Run a scan or wait for next cycle</p>
       </div>
     )
@@ -145,7 +118,6 @@ export function SignalsTable({ signals, weatherSignals, onSimulateTrade, isSimul
       <thead className="sticky top-0 bg-[#0a0a0a] z-10">
         <tr className="text-neutral-600 text-left text-[10px] border-b border-neutral-800">
           <th className="py-1.5 px-1.5 font-medium w-6"></th>
-          <th className="py-1.5 px-1.5 font-medium w-5"></th>
           <th className="py-1.5 px-1.5 font-medium">Signal</th>
           <th className="py-1.5 px-1.5 font-medium text-center w-8">Dir</th>
           <th
@@ -180,7 +152,7 @@ export function SignalsTable({ signals, weatherSignals, onSimulateTrade, isSimul
         <AnimatePresence>
           {sorted.map((sig, i) => {
             const isExpanded = expandedKey === sig.key
-            const isUp = sig.direction === 'up' || sig.direction === 'above'
+            const isYes = sig.direction === 'yes' || sig.direction === 'above'
 
             return (
               <motion.tr
@@ -197,15 +169,12 @@ export function SignalsTable({ signals, weatherSignals, onSimulateTrade, isSimul
                   <PlatformBadge platform={sig.platform} />
                 </td>
                 <td className="py-1 px-1.5">
-                  <CategoryBadge category={sig.category} />
-                </td>
-                <td className="py-1 px-1.5">
-                  <span className="text-neutral-400 truncate block max-w-[110px]" title={sig.title}>
+                  <span className="text-neutral-400 truncate block max-w-[130px]" title={sig.title}>
                     {sig.title}
                   </span>
                 </td>
                 <td className="py-1 px-1.5 text-center">
-                  <span className={`text-[10px] font-semibold uppercase ${isUp ? 'text-green-500' : 'text-red-500'}`}>
+                  <span className={`text-[10px] font-semibold uppercase ${isYes ? 'text-green-500' : 'text-red-500'}`}>
                     {sig.direction}
                   </span>
                 </td>
@@ -226,11 +195,11 @@ export function SignalsTable({ signals, weatherSignals, onSimulateTrade, isSimul
                   {sig.suggestedSize > 0 ? `$${sig.suggestedSize.toFixed(0)}` : '-'}
                 </td>
                 <td className="py-1 px-1.5 text-right">
-                  {sig.actionable && sig.category === 'BTC' && (
+                  {sig.actionable && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onSimulateTrade(sig.ticker) }}
                       disabled={isSimulating}
-                      className="px-1.5 py-0.5 text-[8px] font-medium uppercase bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 disabled:opacity-50"
+                      className="px-1.5 py-0.5 text-[8px] font-medium uppercase bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/20 disabled:opacity-50"
                     >
                       Trade
                     </button>

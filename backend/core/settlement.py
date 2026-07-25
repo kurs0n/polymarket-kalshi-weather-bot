@@ -1,8 +1,8 @@
-"""Trade settlement logic for BTC 5-min and weather markets using Polymarket API."""
+"""Trade settlement logic for weather markets on Polymarket and Kalshi."""
 import httpx
 import json
 import logging
-from datetime import datetime, date
+from datetime import datetime
 from typing import Optional, List, Tuple
 from sqlalchemy.orm import Session
 
@@ -15,14 +15,11 @@ async def fetch_polymarket_resolution(market_id: str, event_slug: Optional[str] 
     """
     Fetch actual market resolution from Polymarket API.
 
-    For BTC 5-min markets, uses event slug to find the market.
-
     Returns: (is_resolved, settlement_value)
-        - settlement_value: 1.0 if Up won, 0.0 if Down won
+        - settlement_value: 1.0 if Yes won, 0.0 if No won
     """
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # Try event slug first (more reliable for BTC 5-min markets)
             if event_slug:
                 response = await client.get(
                     "https://gamma-api.polymarket.com/events",
@@ -37,7 +34,6 @@ async def fetch_polymarket_resolution(market_id: str, event_slug: Optional[str] 
                     if markets:
                         return _parse_market_resolution(markets[0])
 
-            # Fallback: try market ID directly
             url = f"https://gamma-api.polymarket.com/markets/{market_id}"
             response = await client.get(url)
 
@@ -85,9 +81,8 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
     """
     Parse market data to determine if resolved and outcome.
 
-    Handles both Yes/No and Up/Down outcomes.
-    - outcomePrices[0] > 0.99 -> first outcome won (Yes or Up)
-    - outcomePrices[0] < 0.01 -> second outcome won (No or Down)
+    - outcomePrices[0] > 0.99 -> Yes won
+    - outcomePrices[0] < 0.01 -> No won
     """
     is_closed = market.get("closed", False)
 
@@ -105,12 +100,10 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
         first_price = float(outcome_prices[0]) if outcome_prices else 0.5
 
         if first_price > 0.99:
-            # First outcome won (Up or Yes)
-            logger.info(f"Market {market.get('id')} resolved: UP/YES won")
+            logger.info(f"Market {market.get('id')} resolved: YES won")
             return True, 1.0
         elif first_price < 0.01:
-            # Second outcome won (Down or No)
-            logger.info(f"Market {market.get('id')} resolved: DOWN/NO won")
+            logger.info(f"Market {market.get('id')} resolved: NO won")
             return True, 0.0
         else:
             return False, None
@@ -124,13 +117,8 @@ def calculate_pnl(trade: Trade, settlement_value: float) -> float:
     """
     Calculate P&L for a trade given the settlement value.
 
-    settlement_value: 1.0 if Up/Yes outcome, 0.0 if Down/No outcome
-
-    Maps up->yes, down->no internally:
-    - UP position wins when settlement = 1.0
-    - DOWN position wins when settlement = 0.0
+    settlement_value: 1.0 if Yes outcome, 0.0 if No outcome
     """
-    # Map up/down to yes/no logic
     direction = trade.direction
     if direction == "up":
         direction = "yes"
@@ -142,39 +130,13 @@ def calculate_pnl(trade: Trade, settlement_value: float) -> float:
             pnl = trade.size * (1.0 - trade.entry_price)
         else:
             pnl = -trade.size * trade.entry_price
-    else:  # NO / DOWN position
+    else:
         if settlement_value == 0.0:
             pnl = trade.size * (1.0 - trade.entry_price)
         else:
             pnl = -trade.size * trade.entry_price
 
     return round(pnl, 2)
-
-
-async def check_market_settlement(trade: Trade) -> Tuple[bool, Optional[float], Optional[float]]:
-    """
-    Check if a trade's market has settled.
-
-    Returns: (is_settled, settlement_value, pnl)
-    """
-    is_resolved, settlement_value = await fetch_polymarket_resolution(
-        trade.market_ticker,
-        event_slug=trade.event_slug
-    )
-
-    if not is_resolved or settlement_value is None:
-        return False, None, None
-
-    pnl = calculate_pnl(trade, settlement_value)
-
-    mapped_dir = "UP" if trade.direction in ("up", "yes") else "DOWN"
-    outcome = "UP" if settlement_value == 1.0 else "DOWN"
-    result = "WIN" if mapped_dir == outcome else "LOSS"
-
-    logger.info(f"Trade {trade.id} settled: {mapped_dir} @ {trade.entry_price:.0%} -> "
-                f"{result} P&L: ${pnl:+.2f}")
-
-    return True, settlement_value, pnl
 
 
 async def check_weather_settlement(trade: Trade) -> Tuple[bool, Optional[float], Optional[float]]:
@@ -228,10 +190,7 @@ async def _fetch_kalshi_resolution(ticker: str) -> Tuple[bool, Optional[float]]:
 
 
 async def settle_pending_trades(db: Session) -> List[Trade]:
-    """
-    Process all pending trades for settlement.
-    Uses REAL market outcomes from Polymarket API.
-    """
+    """Process all pending weather trades for settlement."""
     try:
         pending = db.query(Trade).filter(Trade.settled == False).all()
     except Exception as e:
@@ -247,12 +206,7 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
 
     for trade in pending:
         try:
-            # Route settlement by market type
-            market_type = getattr(trade, 'market_type', 'btc') or 'btc'
-            if market_type == "weather":
-                is_settled, settlement_value, pnl = await check_weather_settlement(trade)
-            else:
-                is_settled, settlement_value, pnl = await check_market_settlement(trade)
+            is_settled, settlement_value, pnl = await check_weather_settlement(trade)
 
             if is_settled and settlement_value is not None:
                 trade.settled = True
@@ -269,11 +223,10 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
 
                 settled_trades.append(trade)
 
-                # Update linked Signal with actual outcome for calibration
                 if trade.signal_id:
                     linked_signal = db.query(Signal).filter(Signal.id == trade.signal_id).first()
                     if linked_signal:
-                        actual_outcome = "up" if settlement_value == 1.0 else "down"
+                        actual_outcome = "yes" if settlement_value == 1.0 else "no"
                         linked_signal.actual_outcome = actual_outcome
                         linked_signal.outcome_correct = (linked_signal.direction == actual_outcome)
                         linked_signal.settlement_value = settlement_value

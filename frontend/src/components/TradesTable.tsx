@@ -112,7 +112,7 @@ export function TradesTable({ trades }: Props) {
           {sortedTrades.map((trade, i) => {
             const isPending = trade.result === 'pending'
             const isWin = trade.result === 'win'
-            const isUp = trade.direction === 'up'
+            const isYes = trade.direction === 'yes' || trade.direction === 'up'
             const style = platformStyles[trade.platform?.toLowerCase()]
 
             return (
@@ -139,11 +139,11 @@ export function TradesTable({ trades }: Props) {
                 </td>
                 <td className="py-1 px-1.5">
                   <span className="text-neutral-400 truncate block max-w-[100px]" title={trade.event_slug || trade.market_ticker}>
-                    {(trade.event_slug || trade.market_ticker).replace('btc-updown-5m-', '')}
+                    {trade.event_slug || trade.market_ticker}
                   </span>
                 </td>
                 <td className="py-1 px-1.5 text-center">
-                  <span className={`text-[10px] font-semibold uppercase ${isUp ? 'text-green-500' : 'text-red-500'}`}>
+                  <span className={`text-[10px] font-semibold uppercase ${isYes ? 'text-green-500' : 'text-red-500'}`}>
                     {trade.direction}
                   </span>
                 </td>

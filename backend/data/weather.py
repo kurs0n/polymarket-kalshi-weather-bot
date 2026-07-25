@@ -51,6 +51,14 @@ CITY_CONFIG: Dict[str, dict] = {
         "nws_office": "BOU",
         "nws_gridpoint": "BOU/62,60",
     },
+    "boston": {
+        "name": "Boston",
+        "lat": 42.3656,
+        "lon": -71.0096,
+        "nws_station": "KBOS",
+        "nws_office": "BOX",
+        "nws_gridpoint": "BOX/71,101",
+    },
 }
 
 
