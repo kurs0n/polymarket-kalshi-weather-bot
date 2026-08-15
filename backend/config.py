@@ -37,6 +37,24 @@ class Settings(BaseSettings):
     WEATHER_MAX_TRADE_SIZE: float = 100.0
     WEATHER_CITIES: str = "nyc,chicago,miami,los_angeles,denver,boston"
 
+    # Per-scan trading limits — 2026-08-15: pulled out of scheduler.py so
+    # bankroll changes (INITIAL_BANKROLL) don't also require code edits here.
+    # WEATHER_MIN_TRADE_SIZE in particular only makes sense relative to the
+    # bankroll: it must stay well below Kelly's max-per-trade output
+    # (bankroll * KELLY_MAX_TRADE_FRACTION) or it silently overrides Kelly's
+    # sizing and every trade comes out identical regardless of confidence
+    # (this happened at $30 bankroll with a $10 floor — the floor was above
+    # Kelly's entire possible output range).
+    WEATHER_MIN_TRADE_SIZE: float = 1.0
+    WEATHER_MAX_TRADES_PER_SCAN: int = 3
+    WEATHER_MAX_ALLOCATION: float = 500.0
+
+    # Kelly sizing cap — max fraction of bankroll any single trade can use,
+    # applied after KELLY_FRACTION. This is the ceiling counterpart to
+    # WEATHER_MIN_TRADE_SIZE above: together they define the dollar range
+    # confidence can actually size within at the current bankroll.
+    KELLY_MAX_TRADE_FRACTION: float = 0.05  # 5%
+
     class Config:
         env_file = ".env"
 

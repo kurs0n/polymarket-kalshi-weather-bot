@@ -42,13 +42,20 @@ class WeatherMarket:
     city_key: str
     city_name: str
     target_date: date
-    threshold_f: float       # Temperature threshold in Fahrenheit
+    threshold_f: float       # Temperature threshold in Fahrenheit ("above"/"below");
+                              # midpoint of [floor_f, cap_f] for "between" brackets
     metric: str              # "high" or "low"
-    direction: str           # "above" or "below"
-    yes_price: float         # Price of YES outcome (0-1)
-    no_price: float          # Price of NO outcome (0-1)
+    direction: str           # "above", "below", or "between" (narrow bracket)
+    yes_price: float         # Best ask for YES (entry price if buying YES), 0-1
+    no_price: float          # Best ask for NO (entry price if buying NO), 0-1
+    yes_bid: float = 0.0     # Best bid for YES (0 = no active buyer)
+    no_bid: float = 0.0      # Best bid for NO (0 = no active buyer)
+    bid_ask_spread: float = 0.0  # yes_ask - yes_bid in dollars
+    has_live_book: bool = False  # True only when both ask and bid are confirmed live
     volume: float = 0.0
     closed: bool = False
+    floor_f: Optional[float] = None  # "between" brackets only: lower bound (inclusive)
+    cap_f: Optional[float] = None    # "between" brackets only: upper bound (inclusive)
 
 
 def _parse_weather_market_title(title: str) -> Optional[dict]:

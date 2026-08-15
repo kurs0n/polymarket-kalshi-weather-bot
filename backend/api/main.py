@@ -158,6 +158,28 @@ class EventResponse(BaseModel):
     data: dict = {}
 
 
+async def _fetch_kalshi_live_balance() -> Optional[float]:
+    """
+    Return the live Kalshi portfolio balance in dollars, or None on failure.
+    Uses balance_dollars from the /portfolio/balance endpoint (full precision).
+    """
+    try:
+        from backend.data.kalshi_client import KalshiClient, kalshi_credentials_present
+        if not kalshi_credentials_present():
+            return None
+        client = KalshiClient()
+        resp = await client.get_balance()
+        bal_str = resp.get("balance_dollars")
+        if bal_str:
+            return float(bal_str)
+        cents = resp.get("balance")
+        if cents is not None:
+            return int(cents) / 100.0
+    except Exception as e:
+        print(f"  Warning: could not fetch Kalshi balance: {e}")
+    return None
+
+
 @app.on_event("startup")
 async def startup():
     print("=" * 60)
@@ -171,6 +193,7 @@ async def startup():
     try:
         state = db.query(BotState).first()
         if not state:
+            # First run — seed from config
             state = BotState(
                 bankroll=settings.INITIAL_BANKROLL,
                 total_trades=0,
@@ -183,8 +206,47 @@ async def startup():
             print(f"Created new bot state with ${settings.INITIAL_BANKROLL:,.2f} bankroll")
         else:
             state.is_running = True
+
+            if not settings.SIMULATION_MODE:
+                # Live mode: cap the operational bankroll at INITIAL_BANKROLL so
+                # the .env setting acts as a hard budget ceiling regardless of the
+                # total Kalshi account balance.
+                live_balance = await _fetch_kalshi_live_balance()
+                cap = float(settings.INITIAL_BANKROLL)
+                if live_balance is not None:
+                    capped = min(live_balance, cap)
+                    print(
+                        f"LIVE MODE: Kalshi balance ${live_balance:,.2f}, "
+                        f"INITIAL_BANKROLL cap ${cap:,.2f} → bankroll set to ${capped:,.2f}"
+                    )
+                    state.bankroll = capped
+                else:
+                    # Kalshi API unavailable — fall back to configured initial bankroll
+                    print(
+                        f"LIVE MODE: Kalshi balance unavailable, "
+                        f"resetting bankroll to ${cap:,.2f}"
+                    )
+                    state.bankroll = cap
+
+                # Record the live session start time and baseline balance once
+                # (preserved across restarts so the dashboard sees the full live history).
+                if state.live_session_start is None:
+                    state.live_session_start = datetime.utcnow()
+                    state.live_start_balance = state.bankroll
+                    print(
+                        f"LIVE MODE: new live session started at {state.live_session_start.isoformat()} "
+                        f"with ${state.live_start_balance:,.2f}"
+                    )
+                else:
+                    print(
+                        f"LIVE MODE: resuming live session started {state.live_session_start.isoformat()}"
+                    )
+
             db.commit()
-            print(f"Loaded bot state: Bankroll ${state.bankroll:,.2f}, P&L ${state.total_pnl:+,.2f}, {state.total_trades} trades")
+            print(
+                f"Bot state: Bankroll ${state.bankroll:,.2f} | "
+                f"P&L ${state.total_pnl:+,.2f} | {state.total_trades} trades"
+            )
     finally:
         db.close()
 
@@ -235,14 +297,36 @@ async def get_stats(db: Session = Depends(get_db)):
     if not state:
         raise HTTPException(status_code=404, detail="Bot state not initialized")
 
-    win_rate = state.winning_trades / state.total_trades if state.total_trades > 0 else 0
+    live_mode = not settings.SIMULATION_MODE
+
+    if live_mode and state.live_session_start:
+        # Derive trade stats from DB so only live-session trades count — the
+        # BotState counters include all historical paper trades too.
+        live_trades = (
+            db.query(Trade)
+            .filter(Trade.timestamp >= state.live_session_start)
+            .all()
+        )
+        settled_live = [
+            t for t in live_trades
+            if t.settled and t.result not in ("timed_out", "pending")
+        ]
+        total_trades = len(live_trades)
+        winning_trades = sum(1 for t in settled_live if t.result == "win")
+        total_pnl = sum(t.pnl for t in settled_live if t.pnl is not None)
+        win_rate = winning_trades / total_trades if total_trades > 0 else 0.0
+    else:
+        total_trades = state.total_trades
+        winning_trades = state.winning_trades
+        win_rate = winning_trades / total_trades if total_trades > 0 else 0.0
+        total_pnl = state.total_pnl
 
     return BotStats(
         bankroll=state.bankroll,
-        total_trades=state.total_trades,
-        winning_trades=state.winning_trades,
+        total_trades=total_trades,
+        winning_trades=winning_trades,
         win_rate=win_rate,
-        total_pnl=state.total_pnl,
+        total_pnl=total_pnl,
         is_running=state.is_running,
         last_run=state.last_run
     )
@@ -279,19 +363,33 @@ async def get_trades(
 
 @app.get("/api/equity-curve")
 async def get_equity_curve(db: Session = Depends(get_db)):
-    trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
+    live_mode = not settings.SIMULATION_MODE
+
+    if live_mode:
+        state = db.query(BotState).first()
+        if not state or not state.live_session_start:
+            return []
+        cutoff = state.live_session_start
+        start_balance = state.live_start_balance or float(settings.INITIAL_BANKROLL)
+        trades = (
+            db.query(Trade)
+            .filter(Trade.settled == True, Trade.timestamp >= cutoff)
+            .order_by(Trade.timestamp)
+            .all()
+        )
+    else:
+        start_balance = float(settings.INITIAL_BANKROLL)
+        trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
 
     curve = []
-    cumulative_pnl = 0
-    bankroll = settings.INITIAL_BANKROLL
-
+    cumulative_pnl = 0.0
     for trade in trades:
         if trade.pnl is not None:
             cumulative_pnl += trade.pnl
             curve.append({
                 "timestamp": trade.timestamp.isoformat(),
                 "pnl": cumulative_pnl,
-                "bankroll": bankroll + cumulative_pnl,
+                "bankroll": start_balance + cumulative_pnl,
                 "trade_id": trade.id
             })
 
@@ -600,9 +698,18 @@ def _weather_signal_to_response(s) -> WeatherSignalResponse:
 
 
 @app.get("/api/events", response_model=List[EventResponse])
-async def get_events(limit: int = 50):
+async def get_events(limit: int = 50, db: Session = Depends(get_db)):
     from backend.core.scheduler import get_recent_events
-    events = get_recent_events(limit)
+    events = get_recent_events(200)  # fetch generously, then filter+slice
+
+    live_mode = not settings.SIMULATION_MODE
+    if live_mode:
+        state = db.query(BotState).first()
+        if state and state.live_session_start:
+            cutoff_str = state.live_session_start.isoformat()
+            events = [e for e in events if e.get("timestamp", "") >= cutoff_str]
+
+    events = events[-limit:]  # most-recent `limit` after filtering
     return [
         EventResponse(
             timestamp=e["timestamp"],
@@ -656,6 +763,8 @@ async def reset_bot(db: Session = Depends(get_db)):
             state.winning_trades = 0
             state.total_pnl = 0.0
             state.is_running = True
+            state.live_session_start = None
+            state.live_start_balance = None
 
         ai_logs_deleted = db.query(AILog).delete()
         db.commit()
@@ -679,7 +788,19 @@ async def get_dashboard(db: Session = Depends(get_db)):
     """Get all dashboard data in one call."""
     stats = await get_stats(db)
 
-    trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(50).all()
+    live_mode = not settings.SIMULATION_MODE
+    state = db.query(BotState).first()
+    live_cutoff = state.live_session_start if (live_mode and state) else None
+    live_start_balance = (
+        (state.live_start_balance or float(settings.INITIAL_BANKROLL))
+        if (live_mode and state)
+        else float(settings.INITIAL_BANKROLL)
+    )
+
+    trades_q = db.query(Trade)
+    if live_cutoff:
+        trades_q = trades_q.filter(Trade.timestamp >= live_cutoff)
+    trades = trades_q.order_by(Trade.timestamp.desc()).limit(50).all()
     recent_trades = [
         TradeResponse(
             id=t.id,
@@ -697,16 +818,19 @@ async def get_dashboard(db: Session = Depends(get_db)):
         for t in trades
     ]
 
-    equity_trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
+    eq_q = db.query(Trade).filter(Trade.settled == True)
+    if live_cutoff:
+        eq_q = eq_q.filter(Trade.timestamp >= live_cutoff)
+    equity_trades = eq_q.order_by(Trade.timestamp).all()
     equity_curve = []
-    cumulative_pnl = 0
+    cumulative_pnl = 0.0
     for trade in equity_trades:
         if trade.pnl is not None:
             cumulative_pnl += trade.pnl
             equity_curve.append({
                 "timestamp": trade.timestamp.isoformat(),
                 "pnl": cumulative_pnl,
-                "bankroll": settings.INITIAL_BANKROLL + cumulative_pnl
+                "bankroll": live_start_balance + cumulative_pnl
             })
 
     calibration = _compute_calibration_summary(db)
@@ -715,10 +839,14 @@ async def get_dashboard(db: Session = Depends(get_db)):
     weather_forecasts_data = []
     if settings.WEATHER_ENABLED:
         try:
-            from backend.core.weather_signals import scan_for_weather_signals
+            from backend.core.weather_signals import get_cached_weather_signals
             from backend.data.weather import fetch_ensemble_forecast, CITY_CONFIG
 
-            wx_signals = await scan_for_weather_signals()
+            # Read the scheduled scan's cached result rather than running a
+            # fresh live market scan on every dashboard poll (this endpoint
+            # is hit every 10s by the frontend) — see the cache's comment in
+            # weather_signals.py for why that mattered.
+            wx_signals = get_cached_weather_signals()
             weather_signals_data = [_weather_signal_to_response(s) for s in wx_signals]
 
             city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]

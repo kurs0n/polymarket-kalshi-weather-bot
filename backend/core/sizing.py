@@ -49,7 +49,7 @@ def calculate_kelly_size(
     kelly = (win_prob * odds - lose_prob) / odds
 
     kelly *= settings.KELLY_FRACTION
-    kelly = min(kelly, 0.05)  # 5% max per trade
+    kelly = min(kelly, settings.KELLY_MAX_TRADE_FRACTION)  # max % of bankroll per trade
     kelly = max(kelly, 0)
 
     size = kelly * bankroll

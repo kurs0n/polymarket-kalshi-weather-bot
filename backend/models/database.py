@@ -43,6 +43,14 @@ class Trade(Base):
     model_probability = Column(Float)
     market_price_at_entry = Column(Float)
     edge_at_entry = Column(Float)
+    confidence = Column(Float, nullable=True)  # z-score-derived confidence at entry (see weather_signals.py)
+
+    # Maker limit order tracking
+    execution_type  = Column(String,   nullable=True)  # "maker_limit", "timed_out"
+    order_id        = Column(String,   nullable=True)  # Kalshi order UUID
+    limit_price     = Column(Float,    nullable=True)  # resting bid price (0–1)
+    order_placed_at = Column(DateTime, nullable=True)  # when order was submitted
+    order_status    = Column(String,   nullable=True)  # "pending_fill", "filled", "cancelled", "timed_out"
 
 
 class BotState(Base):
@@ -56,6 +64,11 @@ class BotState(Base):
     total_pnl = Column(Float, default=0.0)
     last_run = Column(DateTime, nullable=True)
     is_running = Column(Boolean, default=False)
+
+    # Live-mode session tracking — set once on the first live-mode boot, then
+    # preserved across restarts so the dashboard can filter to only live trades.
+    live_session_start = Column(DateTime, nullable=True)   # UTC of first live boot
+    live_start_balance = Column(Float, nullable=True)       # Kalshi balance at that moment
 
 
 class Signal(Base):
@@ -161,6 +174,43 @@ def ensure_schema():
         with engine.connect() as conn:
             with conn.begin():
                 conn.execute(text("ALTER TABLE trades ADD COLUMN market_type VARCHAR DEFAULT 'weather'"))
+
+    for col, coltype in [
+        ("execution_type",  "TEXT"),
+        ("order_id",        "TEXT"),
+        ("limit_price",     "REAL"),
+        ("order_placed_at", "DATETIME"),
+        ("order_status",    "TEXT"),
+        ("confidence",      "REAL"),
+    ]:
+        if col not in columns:
+            with engine.connect() as conn:
+                try:
+                    with conn.begin():
+                        conn.execute(text(f"ALTER TABLE trades ADD COLUMN {col} {coltype}"))
+                except Exception:
+                    pass  # column already exists
+
+    # Add live-mode tracking columns to bot_state table
+    try:
+        state_columns = [col["name"] for col in inspector.get_columns("bot_state")]
+    except Exception:
+        state_columns = []
+
+    if state_columns:
+        is_pg = engine.dialect.name == "postgresql"
+        dt_sql = "TIMESTAMP" if is_pg else "DATETIME"
+        with engine.connect() as conn:
+            for col, coltype in [
+                ("live_session_start", dt_sql),
+                ("live_start_balance",  "FLOAT"),
+            ]:
+                if col not in state_columns:
+                    try:
+                        with conn.begin():
+                            conn.execute(text(f"ALTER TABLE bot_state ADD COLUMN {col} {coltype}"))
+                    except Exception:
+                        pass
 
     # Add calibration columns to signals table
     try:
