@@ -156,25 +156,25 @@ export function Terminal({ isRunning, lastRun, onStart, onStop, onScan }: Props)
   return (
     <div className="terminal h-full flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-neutral-800">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#23262e]">
+        <div className="flex items-center gap-2.5">
           <div className="flex gap-1.5">
-            <div className="w-2.5 h-2.5 rounded-full bg-red-500/80" />
-            <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/80" />
-            <div className="w-2.5 h-2.5 rounded-full bg-green-500/80" />
+            <div className="w-3 h-3 rounded-full bg-red-500/80" />
+            <div className="w-3 h-3 rounded-full bg-yellow-500/80" />
+            <div className="w-3 h-3 rounded-full bg-green-500/80" />
           </div>
-          <span className="text-[10px] text-neutral-500 uppercase tracking-wider ml-2">System Log</span>
+          <span className="panel-header ml-1">System Log</span>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
-            <div className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-amber-500'}`} />
-            <span className="text-[10px] text-neutral-600">
+            <div className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-amber-500'}`} />
+            <span className="text-xs text-neutral-500 uppercase tracking-wide">
               {wsConnected ? 'WS' : 'POLL'}
             </span>
           </div>
           <div className="flex items-center gap-1.5">
             {isRunning && <div className="live-dot" />}
-            <span className="text-[10px] text-neutral-600">
+            <span className="text-xs text-neutral-500 uppercase tracking-wide">
               {isRunning ? 'LIVE' : 'IDLE'}
             </span>
           </div>
@@ -182,16 +182,16 @@ export function Terminal({ isRunning, lastRun, onStart, onStop, onScan }: Props)
       </div>
 
       {/* Log content */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-0.5 min-h-0">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-2.5 space-y-1 min-h-0">
         {logs.length === 0 ? (
-          <div className="text-neutral-600 text-xs">Waiting for events...</div>
+          <div className="text-neutral-600 text-sm">Waiting for events...</div>
         ) : (
           logs.map((log, i) => (
-            <div key={i} className="flex gap-2 text-xs leading-relaxed">
+            <div key={i} className="flex gap-3 text-sm leading-relaxed">
               <span className="text-neutral-600 tabular-nums shrink-0">
                 {formatTime(log.timestamp)}
               </span>
-              <span className={`shrink-0 ${getTypeColor(log.type)}`}>
+              <span className={`shrink-0 font-medium ${getTypeColor(log.type)}`}>
                 {getTypePrefix(log.type)}
               </span>
               <span className={getTypeColor(log.type)}>
@@ -202,7 +202,7 @@ export function Terminal({ isRunning, lastRun, onStart, onStop, onScan }: Props)
         )}
 
         {/* Cursor line */}
-        <div className="flex gap-2 text-xs">
+        <div className="flex gap-3 text-sm">
           <span className="text-neutral-600 tabular-nums">
             {formatTime(new Date().toISOString())}
           </span>
@@ -212,36 +212,36 @@ export function Terminal({ isRunning, lastRun, onStart, onStop, onScan }: Props)
       </div>
 
       {/* Footer with controls */}
-      <div className="px-3 py-2 border-t border-neutral-800 flex justify-between items-center">
-        <div className="flex items-center gap-2">
+      <div className="px-4 py-2.5 border-t border-[#23262e] flex justify-between items-center">
+        <div className="flex items-center gap-2.5">
           {onStart && onStop && (
             <button
               onClick={isRunning ? onStop : onStart}
-              className={`flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-wider border transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wide border transition-colors ${
                 isRunning
-                  ? 'border-amber-500/30 text-amber-500 hover:bg-amber-500/10'
-                  : 'border-green-500/30 text-green-500 hover:bg-green-500/10'
+                  ? 'border-amber-500/30 text-amber-400 hover:bg-amber-500/10'
+                  : 'border-green-500/30 text-green-400 hover:bg-green-500/10'
               }`}
             >
-              {isRunning ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+              {isRunning ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
               {isRunning ? 'Pause' : 'Start'}
             </button>
           )}
           {onScan && (
             <button
               onClick={onScan}
-              className="flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-wider border border-blue-500/30 text-blue-500 hover:bg-blue-500/10 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wide border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 transition-colors"
             >
-              <RefreshCw className="w-3 h-3" />
+              <RefreshCw className="w-3.5 h-3.5" />
               Scan
             </button>
           )}
         </div>
         <div className="flex items-center gap-4">
-          <span className="text-[10px] text-neutral-600">
+          <span className="text-xs text-neutral-500">
             {lastRun ? `Last: ${formatTime(lastRun)}` : 'No scans'}
           </span>
-          <span className="text-[10px] text-neutral-600 tabular-nums">
+          <span className="text-xs text-neutral-500 tabular-nums">
             {logs.length} entries
           </span>
         </div>

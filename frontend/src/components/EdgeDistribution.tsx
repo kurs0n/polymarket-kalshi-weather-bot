@@ -20,10 +20,10 @@ function getBucket(edge: number): string {
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload || !payload.length) return null
   return (
-    <div className="bg-neutral-900 border border-neutral-800 px-2 py-1.5">
-      <p className="text-[10px] text-neutral-400 mb-1">{label}</p>
+    <div className="bg-neutral-900 border border-[#23262e] rounded-lg px-3 py-2">
+      <p className="text-xs text-neutral-400 mb-1">{label}</p>
       {payload.map((p: any) => (
-        <p key={p.name} className="text-[10px] tabular-nums" style={{ color: p.color }}>
+        <p key={p.name} className="text-xs tabular-nums font-medium" style={{ color: p.color }}>
           {p.name}: {p.value}
         </p>
       ))}
@@ -49,7 +49,7 @@ export function EdgeDistribution({ weatherSignals }: Props) {
 
   if (weatherSignals.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center text-neutral-600 text-[10px]">
+      <div className="h-full flex items-center justify-center text-neutral-600 text-sm">
         No signals for distribution
       </div>
     )
@@ -59,18 +59,18 @@ export function EdgeDistribution({ weatherSignals }: Props) {
     <div className="h-full">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 8, left: -10, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1a" vertical={false} />
+          <CartesianGrid strokeDasharray="3 3" stroke="#23262e" vertical={false} />
           <XAxis
             dataKey="bucket"
-            stroke="#525252"
-            fontSize={9}
+            stroke="#7a7f8c"
+            fontSize={12}
             tickLine={false}
             axisLine={false}
             fontFamily="JetBrains Mono"
           />
           <YAxis
-            stroke="#525252"
-            fontSize={9}
+            stroke="#7a7f8c"
+            fontSize={12}
             tickLine={false}
             axisLine={false}
             allowDecimals={false}

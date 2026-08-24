@@ -1,21 +1,23 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --background: #000000;
-  --foreground: #e5e5e5;
-  --card: #0a0a0a;
-  --card-hover: #111111;
-  --border: #1a1a1a;
-  --border-light: #262626;
+  --background: #08090b;
+  --foreground: #e8e9ec;
+  --card: #111318;
+  --card-hover: #171a20;
+  --border: #23262e;
+  --border-light: #33363f;
   --accent: #ffffff;
-  --danger: #dc2626;
-  --warning: #d97706;
-  --success: #16a34a;
-  --muted: #525252;
+  --danger: #f04444;
+  --warning: #e0a12e;
+  --success: #2fbf6b;
+  --muted: #7a7f8c;
+  --radius: 12px;
+  --radius-sm: 8px;
 }
 
 * {
@@ -46,7 +48,8 @@ body {
   padding: 0;
   background: var(--background);
   color: var(--foreground);
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+  font-size: 15px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -62,11 +65,31 @@ body {
 .card {
   background: var(--card);
   border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
 
 .card-hover:hover {
   background: var(--card-hover);
   border-color: var(--border-light);
+}
+
+/* Section panel — the standard modernized container used across the
+   dashboard grid, replacing flush edge-to-edge borders with a proper
+   card: rounded, lightly elevated, and clearly separated from its
+   neighbors so no section reads as buried or secondary. */
+.panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 8px 20px -12px rgba(0, 0, 0, 0.5);
+}
+
+.panel-header {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #b8bcc6;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 /* Animated card border */
@@ -109,7 +132,8 @@ body {
 /* Badge styles */
 .badge {
   padding: 0.25rem 0.75rem;
-  font-size: 0.6875rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -124,8 +148,8 @@ body {
 
 /* Stat value styling */
 .stat-value {
-  font-size: 1.75rem;
-  font-weight: 600;
+  font-size: 2.25rem;
+  font-weight: 700;
   font-family: 'JetBrains Mono', monospace;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
@@ -134,7 +158,7 @@ body {
 /* Monospace font for data */
 .mono {
   font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
 }
 
 /* Table styles */
@@ -144,16 +168,17 @@ table {
 
 th {
   text-transform: uppercase;
-  font-size: 0.6875rem;
-  letter-spacing: 0.1em;
-  font-weight: 500;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  font-weight: 600;
 }
 
 /* Button styles */
 .btn {
-  padding: 0.5rem 1rem;
-  font-size: 0.75rem;
-  font-weight: 500;
+  padding: 0.5rem 1.125rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.8125rem;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   transition: all 0.15s ease;
@@ -168,22 +193,23 @@ th {
 }
 
 .btn-primary {
-  background: #171717;
-  border-color: #262626;
+  background: #1b1e25;
+  border-color: #33363f;
 }
 
 .btn-primary:hover {
-  background: #262626;
-  border-color: #333333;
+  background: #262a33;
+  border-color: #3d4149;
 }
 
 /* Terminal/Log styles */
 .terminal {
-  background: #0a0a0a;
-  border: 1px solid #1a1a1a;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 0.7rem;
-  line-height: 1.5;
+  font-size: 0.875rem;
+  line-height: 1.6;
 }
 
 .terminal-line {
@@ -289,11 +315,12 @@ input:focus, button:focus {
 }
 
 input {
-  background: #0a0a0a;
-  border: 1px solid #1a1a1a;
-  color: #e5e5e5;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--foreground);
   padding: 0.5rem 0.75rem;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
 }
 
 input::placeholder {
@@ -375,21 +402,21 @@ input:focus {
 }
 
 .marker-name {
-  font-size: 9px;
-  font-weight: 500;
-  color: #a1a1aa;
+  font-size: 11px;
+  font-weight: 600;
+  color: #b8bcc6;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .marker-temp {
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
 .marker-edge {
-  font-size: 9px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -398,9 +425,10 @@ input:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
-  font-size: 9px;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  font-size: 10px;
   font-weight: 700;
   border: 1px solid;
   font-family: 'JetBrains Mono', monospace;

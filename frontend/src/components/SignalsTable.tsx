@@ -1,8 +1,8 @@
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { useState, useMemo } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
 import type { WeatherSignal } from '../types'
 import { platformStyles } from '../utils'
+import { SignalDetailModal } from './SignalDetailModal'
 
 interface Props {
   weatherSignals: WeatherSignal[]
@@ -23,7 +23,9 @@ interface UnifiedSignal {
   modelProb: number
   marketProb: number
   confidence: number
+  kellyFraction: number
   suggestedSize: number
+  sources: string[]
   reasoning: string
   actionable: boolean
 }
@@ -52,7 +54,7 @@ function EdgeBar({ edge }: { edge: number }) {
 export function SignalsTable({ weatherSignals, onSimulateTrade, isSimulating }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>('edge')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
-  const [expandedKey, setExpandedKey] = useState<string | null>(null)
+  const [selected, setSelected] = useState<UnifiedSignal | null>(null)
 
   const unified: UnifiedSignal[] = useMemo(() => {
     return weatherSignals.map(s => ({
@@ -65,7 +67,9 @@ export function SignalsTable({ weatherSignals, onSimulateTrade, isSimulating }: 
       modelProb: s.model_probability,
       marketProb: s.market_probability,
       confidence: s.confidence,
+      kellyFraction: s.kelly_fraction,
       suggestedSize: s.suggested_size,
+      sources: s.sources,
       reasoning: s.reasoning,
       actionable: s.actionable,
     }))
@@ -98,118 +102,121 @@ export function SignalsTable({ weatherSignals, onSimulateTrade, isSimulating }: 
   }, [unified, sortKey, sortDir])
 
   const SortIcon = ({ column }: { column: SortKey }) => {
-    if (sortKey !== column) return <ArrowUpDown className="w-2.5 h-2.5 text-neutral-600" />
+    if (sortKey !== column) return <ArrowUpDown className="w-3 h-3 text-neutral-600" />
     return sortDir === 'asc'
-      ? <ArrowUp className="w-2.5 h-2.5 text-cyan-400" />
-      : <ArrowDown className="w-2.5 h-2.5 text-cyan-400" />
+      ? <ArrowUp className="w-3 h-3 text-cyan-400" />
+      : <ArrowDown className="w-3 h-3 text-cyan-400" />
   }
 
   if (unified.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-8 text-neutral-600">
-        <p className="text-xs">No weather signals</p>
-        <p className="text-[10px] mt-0.5 text-neutral-700">Run a scan or wait for next cycle</p>
+        <p className="text-sm">No weather signals</p>
+        <p className="text-xs mt-1 text-neutral-700">Run a scan or wait for next cycle</p>
       </div>
     )
   }
 
   return (
+    <>
     <table className="w-full">
-      <thead className="sticky top-0 bg-[#0a0a0a] z-10">
-        <tr className="text-neutral-600 text-left text-[10px] border-b border-neutral-800">
-          <th className="py-1.5 px-1.5 font-medium w-6"></th>
-          <th className="py-1.5 px-1.5 font-medium">Signal</th>
-          <th className="py-1.5 px-1.5 font-medium text-center w-8">Dir</th>
+      <thead className="sticky top-0 z-10" style={{ background: 'var(--card)' }}>
+        <tr className="text-neutral-500 text-left text-xs border-b border-[#23262e]">
+          <th className="py-2.5 px-2 font-semibold w-8"></th>
+          <th className="py-2.5 px-2 font-semibold">Signal</th>
+          <th className="py-2.5 px-2 font-semibold text-center w-10">Dir</th>
           <th
-            className="py-1.5 px-1.5 font-medium text-right cursor-pointer hover:text-neutral-400"
+            className="py-2.5 px-2 font-semibold text-right cursor-pointer hover:text-neutral-300"
             onClick={() => handleSort('edge')}
           >
-            <div className="flex items-center justify-end gap-0.5">
+            <div className="flex items-center justify-end gap-1">
               Edge <SortIcon column="edge" />
             </div>
           </th>
-          <th className="py-1.5 px-1.5 font-medium text-right w-10"></th>
+          <th className="py-2.5 px-2 font-semibold text-right w-10"></th>
           <th
-            className="py-1.5 px-1.5 font-medium text-right cursor-pointer hover:text-neutral-400"
+            className="py-2.5 px-2 font-semibold text-right cursor-pointer hover:text-neutral-300"
             onClick={() => handleSort('model_probability')}
           >
-            <div className="flex items-center justify-end gap-0.5">
+            <div className="flex items-center justify-end gap-1">
               Mod <SortIcon column="model_probability" />
             </div>
           </th>
           <th
-            className="py-1.5 px-1.5 font-medium text-right cursor-pointer hover:text-neutral-400"
+            className="py-2.5 px-2 font-semibold text-right cursor-pointer hover:text-neutral-300"
             onClick={() => handleSort('suggested_size')}
           >
-            <div className="flex items-center justify-end gap-0.5">
+            <div className="flex items-center justify-end gap-1">
               Size <SortIcon column="suggested_size" />
             </div>
           </th>
-          <th className="py-1.5 px-1.5 font-medium text-right w-10"></th>
+          <th className="py-2.5 px-2 font-semibold text-right w-12"></th>
         </tr>
       </thead>
       <tbody>
-        <AnimatePresence>
-          {sorted.map((sig, i) => {
-            const isExpanded = expandedKey === sig.key
+        {sorted.map((sig) => {
             const isYes = sig.direction === 'yes' || sig.direction === 'above'
 
             return (
-              <motion.tr
-                key={sig.key}
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.02 }}
-                className={`border-b border-neutral-800/50 hover:bg-neutral-800/30 text-[11px] cursor-pointer ${
-                  sig.actionable ? '' : 'opacity-40'
-                }`}
-                onClick={() => setExpandedKey(isExpanded ? null : sig.key)}
-              >
-                <td className="py-1 px-1.5">
-                  <PlatformBadge platform={sig.platform} />
-                </td>
-                <td className="py-1 px-1.5">
-                  <span className="text-neutral-400 truncate block max-w-[130px]" title={sig.title}>
-                    {sig.title}
-                  </span>
-                </td>
-                <td className="py-1 px-1.5 text-center">
-                  <span className={`text-[10px] font-semibold uppercase ${isYes ? 'text-green-500' : 'text-red-500'}`}>
-                    {sig.direction}
-                  </span>
-                </td>
-                <td className="py-1 px-1.5 text-right">
-                  <span className={`font-semibold tabular-nums ${
-                    sig.edge > 0 ? 'text-green-500' : sig.edge < 0 ? 'text-red-500' : 'text-neutral-600'
-                  }`}>
-                    {sig.edge === 0 ? '-' : `${Math.abs(sig.edge * 100).toFixed(1)}%`}
-                  </span>
-                </td>
-                <td className="py-1 px-1.5">
-                  <EdgeBar edge={sig.edge} />
-                </td>
-                <td className="py-1 px-1.5 text-right text-neutral-300 tabular-nums">
-                  {(sig.modelProb * 100).toFixed(0)}%
-                </td>
-                <td className="py-1 px-1.5 text-right text-blue-400 tabular-nums">
-                  {sig.suggestedSize > 0 ? `$${sig.suggestedSize.toFixed(0)}` : '-'}
-                </td>
-                <td className="py-1 px-1.5 text-right">
-                  {sig.actionable && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onSimulateTrade(sig.ticker) }}
-                      disabled={isSimulating}
-                      className="px-1.5 py-0.5 text-[8px] font-medium uppercase bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/20 disabled:opacity-50"
-                    >
-                      Trade
-                    </button>
-                  )}
-                </td>
-              </motion.tr>
+                <tr
+                  key={sig.key}
+                  className={`border-b border-neutral-800/50 hover:bg-neutral-800/30 text-sm cursor-pointer ${
+                    sig.actionable ? '' : 'opacity-40'
+                  }`}
+                  onClick={() => setSelected(sig)}
+                >
+                  <td className="py-2 px-2">
+                    <PlatformBadge platform={sig.platform} />
+                  </td>
+                  <td className="py-2 px-2">
+                    <span className="text-neutral-300 truncate block max-w-[150px]" title={sig.title}>
+                      {sig.title}
+                    </span>
+                  </td>
+                  <td className="py-2 px-2 text-center">
+                    <span className={`text-xs font-semibold uppercase ${isYes ? 'text-green-500' : 'text-red-500'}`}>
+                      {sig.direction}
+                    </span>
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    <span className={`font-semibold tabular-nums ${
+                      sig.edge > 0 ? 'text-green-500' : sig.edge < 0 ? 'text-red-500' : 'text-neutral-600'
+                    }`}>
+                      {sig.edge === 0 ? '-' : `${Math.abs(sig.edge * 100).toFixed(1)}%`}
+                    </span>
+                  </td>
+                  <td className="py-2 px-2">
+                    <EdgeBar edge={sig.edge} />
+                  </td>
+                  <td className="py-2 px-2 text-right text-neutral-300 tabular-nums">
+                    {(sig.modelProb * 100).toFixed(0)}%
+                  </td>
+                  <td className="py-2 px-2 text-right text-blue-400 tabular-nums">
+                    {sig.suggestedSize > 0 ? `$${sig.suggestedSize.toFixed(0)}` : '-'}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    {sig.actionable && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onSimulateTrade(sig.ticker) }}
+                        disabled={isSimulating}
+                        className="px-2.5 py-1 rounded-md text-[11px] font-semibold uppercase bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/20 disabled:opacity-50"
+                      >
+                        Trade
+                      </button>
+                    )}
+                  </td>
+                </tr>
             )
           })}
-        </AnimatePresence>
       </tbody>
     </table>
+
+    <SignalDetailModal
+      signal={selected}
+      onClose={() => setSelected(null)}
+      onSimulateTrade={(ticker) => { onSimulateTrade(ticker); setSelected(null) }}
+      isSimulating={isSimulating}
+    />
+    </>
   )
 }
