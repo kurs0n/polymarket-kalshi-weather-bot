@@ -1,15 +1,26 @@
 """
-Unit tests for the three physical execution guardrails.
+Unit tests for the physical execution guardrails still on the entry path:
+absolute floor kill switch, and the low-probability tail guard.
+
+Two guardrails formerly covered here — a same-day TIME_GATE (11h-14h local)
+and an entry-side VELOCITY_KILL projection — were deliberately removed from
+_check_physical_guardrails on 2026-08-17 per user feedback: entering early
+on a real edge is the point, and blocking entry to protect one
+unreliable-before-11h check threw away that edge for no real safety
+benefit. The velocity projection lives on the exit side now instead (see
+weather_signals.py's evaluate_open_positions_for_exit / its "trend_stop"
+exit_type, which watches an OPEN position's trajectory rather than refusing
+to open one) — see execution.py's 2026-08-17 note above _DIURNAL_PEAK_HOUR
+for the full rationale.
 
 Tests mock:
   - `fetch_metar_current` — controls live temperature + trend
   - `_fetch_live_ask`     — isolates guardrail logic from order-book IO
-  - local time (via ZoneInfo-aware datetime.now mocking)
 
 Each test names the guardrail it exercises so failures are self-documenting.
 """
 import asyncio
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,8 +30,6 @@ from backend.core.execution import (
     _check_physical_guardrails,
     _KILL_SWITCH_BUFFER_F,
     _LOW_PROB_TAIL_THRESHOLD,
-    _TRADE_WINDOW_START_H,
-    _TRADE_WINDOW_END_H,
 )
 
 
@@ -70,65 +79,7 @@ def run(coro):
 
 
 # ---------------------------------------------------------------------------
-# Guardrail 1 — Execution time window
-# ---------------------------------------------------------------------------
-
-class TestTimeWindowGuardrail:
-    """Same-day contracts may only execute during _TRADE_WINDOW_START_H – _TRADE_WINDOW_END_H."""
-
-    def _run_with_hour(self, local_hour: int, target_date=None):
-        """Patch datetime.now to return a fixed local hour for NYC."""
-        market  = _make_market(90.0, target_date=target_date or date.today())
-        signal  = _make_signal(market)
-
-        mock_dt = MagicMock()
-        mock_dt.hour = local_hour
-
-        with patch(
-            "backend.core.execution.datetime"
-        ) as mock_datetime, patch(
-            "backend.data.weather.fetch_metar_current",
-            new=AsyncMock(return_value=None),  # METAR unavailable; only time gate fires
-        ):
-            mock_datetime.now.return_value = mock_dt
-            mock_datetime.utcnow.return_value = datetime.utcnow()
-            result = run(_check_physical_guardrails(signal))
-
-        return result
-
-    def test_before_window_is_rejected(self):
-        """Hour 09 < TRADE_WINDOW_START_H → TIME_GATE fires."""
-        reject = self._run_with_hour(9)
-        assert reject is not None
-        assert "TIME_GATE" in reject
-
-    def test_after_window_is_rejected(self):
-        """Hour 16 > TRADE_WINDOW_END_H → TIME_GATE fires."""
-        reject = self._run_with_hour(16)
-        assert reject is not None
-        assert "TIME_GATE" in reject
-
-    def test_at_window_start_passes(self):
-        """Hour == TRADE_WINDOW_START_H → time gate passes."""
-        reject = self._run_with_hour(_TRADE_WINDOW_START_H)
-        # Should be None (METAR unavailable means other checks also skip)
-        assert reject is None
-
-    def test_at_window_end_passes(self):
-        """Hour == TRADE_WINDOW_END_H → time gate passes."""
-        reject = self._run_with_hour(_TRADE_WINDOW_END_H)
-        assert reject is None
-
-    def test_next_day_contract_skips_time_gate(self):
-        """Tomorrow's contract is not same-day → time gate does not fire."""
-        tomorrow = date.today() + timedelta(days=1)
-        reject = self._run_with_hour(9, target_date=tomorrow)
-        # Gate must not fire — only METAR checks (skipped because METAR=None)
-        assert reject is None
-
-
-# ---------------------------------------------------------------------------
-# Guardrail 2 — Absolute floor kill switch
+# Guardrail 1 — Absolute floor kill switch
 # ---------------------------------------------------------------------------
 
 class TestKillSwitch:
@@ -140,24 +91,17 @@ class TestKillSwitch:
     def _check(self, current_temp_f, ceiling_f, trade_dir="no", market_dir="above"):
         """
         Default: NO on an ABOVE market = betting high stays below ceiling.
-        Patches the hour to be inside the execution window so only the kill
-        switch is tested.  Also mocks _hours_until_diurnal_peak=0.0 so that
-        the velocity guard (which shares the datetime mock) does not interfere.
+        Mocks _hours_until_diurnal_peak=0.0 so the (exit-side) velocity
+        calculation some helpers share doesn't interfere with this check.
         """
         market = _make_market(ceiling_f, direction=market_dir)
         signal = _make_signal(market, trade_direction=trade_dir)
         metar  = _make_metar(current_temp_f, trend=0.0)
 
-        mock_dt = MagicMock()
-        mock_dt.hour = _TRADE_WINDOW_START_H  # inside window
-
-        with patch("backend.core.execution.datetime") as mock_datetime, \
-             patch("backend.data.weather.fetch_metar_current",
+        with patch("backend.data.weather.fetch_metar_current",
                    new=AsyncMock(return_value=metar)), \
              patch("backend.core.execution._hours_until_diurnal_peak",
                    return_value=0.0):  # isolate kill switch from velocity calc
-            mock_datetime.now.return_value = mock_dt
-            mock_datetime.utcnow.return_value = datetime.utcnow()
             return run(_check_physical_guardrails(signal))
 
     def test_temp_exactly_at_threshold_fires(self):
@@ -199,88 +143,25 @@ class TestKillSwitch:
         # Current temp 84.9°F — 0.1°F below ceiling of 85°F
         metar = _make_metar(84.9, trend=0.0)
 
-        mock_dt = MagicMock()
-        mock_dt.hour = _TRADE_WINDOW_START_H
-
-        with patch("backend.core.execution.datetime") as mock_datetime, \
-             patch("backend.data.weather.fetch_metar_current",
+        with patch("backend.data.weather.fetch_metar_current",
                    new=AsyncMock(return_value=metar)), \
              patch("backend.core.execution._hours_until_diurnal_peak",
                    return_value=0.0):
-            mock_datetime.now.return_value = mock_dt
-            mock_datetime.utcnow.return_value = datetime.utcnow()
             reject = run(_check_physical_guardrails(signal))
 
         assert reject is None
 
 
-# ---------------------------------------------------------------------------
-# Guardrail 3 — Warming velocity kill switch
-# ---------------------------------------------------------------------------
-
-class TestVelocityKillSwitch:
-    """
-    current_temp + hours_to_peak × trend > ceiling → VELOCITY_KILL.
-    We mock _hours_until_diurnal_peak to return a fixed value.
-    """
-
-    def _check(self, current_temp_f, trend_f_hr, hours_to_peak, ceiling_f):
-        market = _make_market(ceiling_f, direction="above")
-        signal = _make_signal(market, trade_direction="no")  # NO on above = below bet
-        metar  = _make_metar(current_temp_f, trend=trend_f_hr)
-
-        mock_dt = MagicMock()
-        mock_dt.hour = _TRADE_WINDOW_START_H
-
-        with patch("backend.core.execution.datetime") as mock_datetime, \
-             patch("backend.data.weather.fetch_metar_current",
-                   new=AsyncMock(return_value=metar)), \
-             patch("backend.core.execution._hours_until_diurnal_peak",
-                   return_value=hours_to_peak):
-            mock_datetime.now.return_value = mock_dt
-            mock_datetime.utcnow.return_value = datetime.utcnow()
-            return run(_check_physical_guardrails(signal))
-
-    def test_projected_peak_exceeds_ceiling_is_rejected(self):
-        """82°F + 3h × 2.5°F/hr = 89.5°F > ceiling 88°F → VELOCITY_KILL."""
-        reject = self._check(
-            current_temp_f=82.0, trend_f_hr=2.5, hours_to_peak=3.0, ceiling_f=88.0
-        )
-        assert reject is not None
-        assert "VELOCITY_KILL" in reject
-
-    def test_projected_peak_below_ceiling_passes(self):
-        """82°F + 3h × 1.0°F/hr = 85°F < ceiling 88°F → no velocity kill."""
-        reject = self._check(
-            current_temp_f=82.0, trend_f_hr=1.0, hours_to_peak=3.0, ceiling_f=88.0
-        )
-        assert reject is None
-
-    def test_cooling_trend_does_not_fire(self):
-        """Negative trend (cooling) → velocity guard must not trigger."""
-        reject = self._check(
-            current_temp_f=86.0, trend_f_hr=-1.5, hours_to_peak=3.0, ceiling_f=88.0
-        )
-        assert reject is None
-
-    def test_past_peak_does_not_fire(self):
-        """hours_to_peak = 0 (peak already past) → velocity guard must not fire."""
-        reject = self._check(
-            current_temp_f=84.0, trend_f_hr=3.0, hours_to_peak=0.0, ceiling_f=88.0
-        )
-        assert reject is None
-
-    def test_velocity_message_includes_projection(self):
-        """Rejection string must include the projected peak temperature."""
-        reject = self._check(
-            current_temp_f=82.0, trend_f_hr=2.5, hours_to_peak=3.0, ceiling_f=88.0
-        )
-        # Projected = 82 + 3 × 2.5 = 89.5
-        assert "89.5" in reject
+# NOTE: a "Warming velocity kill switch" guardrail (VELOCITY_KILL) used to be
+# tested here as an entry-side check. It was removed from _check_physical_
+# guardrails on 2026-08-17 (see the module docstring above and execution.py's
+# note above _DIURNAL_PEAK_HOUR) — the same projection now runs on the exit
+# side instead, as evaluate_open_positions_for_exit's "trend_stop" exit_type
+# in weather_signals.py, covered by tests/test_nws_tracker_and_exits.py.
 
 
 # ---------------------------------------------------------------------------
-# Guardrail 4 — Low-probability tail guard
+# Guardrail 2 — Low-probability tail guard
 # ---------------------------------------------------------------------------
 
 class TestTailRiskGuard:
@@ -299,16 +180,10 @@ class TestTailRiskGuard:
         signal = _make_signal(market, trade_direction=trade_dir)
         metar  = _make_metar(78.0, trend=trend)  # temp well below ceiling
 
-        mock_dt = MagicMock()
-        mock_dt.hour = _TRADE_WINDOW_START_H
-
-        with patch("backend.core.execution.datetime") as mock_datetime, \
-             patch("backend.data.weather.fetch_metar_current",
+        with patch("backend.data.weather.fetch_metar_current",
                    new=AsyncMock(return_value=metar)), \
              patch("backend.core.execution._hours_until_diurnal_peak",
                    return_value=2.0):
-            mock_datetime.now.return_value = mock_dt
-            mock_datetime.utcnow.return_value = datetime.utcnow()
             return run(_check_physical_guardrails(signal))
 
     def test_cheap_no_on_above_market_plus_warming_rejected(self):

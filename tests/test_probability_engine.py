@@ -223,3 +223,67 @@ def test_reported_extreme_cases(mean, std, threshold, expected_max, label):
             f"[{label}] P(high>{threshold:.1f}F | mean={mean}F) = {p:.1%}, "
             f"expected <{expected_max:.0%}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test group 6: probability_high_between / probability_low_between —
+# 2026-08-22 fix. These must NOT blend in the raw member count the way
+# probability_high_above/below do — see EnsembleForecast.probability_high_
+# between()'s docstring for the real trades that motivated this.
+# ---------------------------------------------------------------------------
+
+class TestBetweenBracketsIgnoreCount:
+
+    def test_tight_ensemble_narrow_band_is_not_forced_to_zero(self):
+        """
+        The exact degenerate case found in production: a tightly-clustered
+        raw ensemble (all 31 members on the same side of a narrow band,
+        because real GFS ensemble spread is often much tighter than the
+        true forecast-error uncertainty) used to make the count-blended
+        difference collapse to a literal 0.0 — even when the properly
+        widened parametric uncertainty said this was an ordinary, non-zero
+        probability. mean=86.5, tight std=0.7 puts every member above an
+        84-85F band; the fix must not report 0%.
+        """
+        fc = _make_forecast(mean=86.5, std=0.7, n=31)
+        # Confirm this really is the degenerate all-unanimous case.
+        k_above_floor = sum(1 for h in fc.member_highs if h > 84.0)
+        k_above_cap = sum(1 for h in fc.member_highs if h > 85.0)
+        assert k_above_floor == 31 and k_above_cap == 31, "test setup must reproduce the unanimous-count case"
+
+        p = fc.probability_high_between(84.0, 85.0)
+        assert p > 0.03, f"expected a non-degenerate probability, got {p:.1%}"
+
+    def test_between_probability_uses_parametric_estimate_directly(self):
+        """probability_high_between must equal the parametric-only difference,
+        not the count-blended one (which is what probability_high_above returns)."""
+        fc = _make_forecast(mean=90.0, std=3.0, n=31)
+        floor_f, cap_f = 91.0, 92.0
+        expected = max(0.0, fc._p_dist_high_above(floor_f) - fc._p_dist_high_above(cap_f))
+        assert fc.probability_high_between(floor_f, cap_f) == pytest.approx(expected, abs=1e-9)
+
+    def test_low_between_mirrors_high_between(self):
+        fc = _make_forecast(mean=90.0, std=3.0, n=31)
+        floor_f, cap_f = 60.0, 61.0
+        expected = max(0.0, fc._p_dist_low_above(floor_f) - fc._p_dist_low_above(cap_f))
+        assert fc.probability_low_between(floor_f, cap_f) == pytest.approx(expected, abs=1e-9)
+
+    def test_between_probability_never_negative(self):
+        """floor/cap reversed or degenerate should still clamp at 0, not go negative."""
+        fc = _make_forecast(mean=90.0, std=3.0, n=31)
+        p = fc.probability_high_between(120.0, 121.0)  # far out in the tail, both ~0
+        assert p >= 0.0
+
+    def test_simple_above_below_unaffected_by_this_fix(self):
+        """Regression guard: probability_high_above/below must still use the
+        count blend exactly as before — this fix only touches the between-
+        bracket methods."""
+        fc = _make_forecast(mean=90.0, std=3.0, n=31)
+        threshold = 93.0
+        k = sum(1 for h in fc.member_highs if h > threshold)
+        from backend.data.weather import COUNT_PSEUDO_SAMPLES
+        p_count = (k + COUNT_PSEUDO_SAMPLES / 2) / (31 + COUNT_PSEUDO_SAMPLES)
+        p_dist = fc._p_dist_high_above(threshold)
+        w = min((31 / 31.0) ** 0.5, 1.0)
+        expected = w * p_count + (1 - w) * p_dist
+        assert fc.probability_high_above(threshold) == pytest.approx(expected, abs=1e-9)

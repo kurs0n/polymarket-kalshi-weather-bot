@@ -15,6 +15,9 @@ from backend.data.kalshi_markets import (
     _PriceRejectReason,
     MAX_BID_ASK_SPREAD_CENTS,
     _parse_kalshi_ticker,
+    _metric_for_ticker,
+    CITY_SERIES,
+    LOW_SERIES,
 )
 
 
@@ -171,31 +174,79 @@ class TestSpreadGuard:
 # Test group 5: ticker parsing
 # ---------------------------------------------------------------------------
 
+def _meta(ticker, strike_type, floor_strike=None, cap_strike=None):
+    """Build a minimal Kalshi market payload — the authoritative path.
+
+    Direction/threshold come from strike_type + floor_strike/cap_strike, NOT
+    the ticker's B/T letter (see _parse_kalshi_ticker's docstring — the B/T
+    prefix alone was root-caused 2026-08-13 as an unreliable direction guess).
+    """
+    return {
+        "ticker":       ticker,
+        "strike_type":  strike_type,
+        "floor_strike": floor_strike,
+        "cap_strike":   cap_strike,
+    }
+
+
 class TestTickerParsing:
 
     def test_bottom_bracket_above(self):
-        result = _parse_kalshi_ticker("KXHIGHNY-26MAR01-B45.5", "nyc")
+        """strike_type='greater' → direction 'above', threshold = floor_strike."""
+        meta = _meta("KXHIGHNY-26MAR01-B45.5", "greater", floor_strike=45.5)
+        result = _parse_kalshi_ticker(meta, "nyc")
         assert result is not None
         assert result["direction"] == "above"
         assert result["threshold_f"] == pytest.approx(45.5)
 
     def test_top_bracket_below(self):
-        result = _parse_kalshi_ticker("KXHIGHNY-26MAR01-T45.5", "nyc")
+        """strike_type='less' → direction 'below', threshold = cap_strike."""
+        meta = _meta("KXHIGHNY-26MAR01-T45.5", "less", cap_strike=45.5)
+        result = _parse_kalshi_ticker(meta, "nyc")
         assert result is not None
         assert result["direction"] == "below"
+        assert result["threshold_f"] == pytest.approx(45.5)
 
     def test_boston_series_with_t_prefix(self):
         """KXHIGHTBOS series ticker — the 'T' in KXHIGHT is part of the series
         name, not the bracket type. The bracket type comes after the date."""
-        result = _parse_kalshi_ticker("KXHIGHTBOS-26AUG10-B85.0", "boston")
+        meta = _meta("KXHIGHTBOS-26AUG10-B85.0", "greater", floor_strike=85.0)
+        result = _parse_kalshi_ticker(meta, "boston")
         assert result is not None
         assert result["direction"] == "above"
         assert result["threshold_f"] == pytest.approx(85.0)
+
+    def test_between_bracket(self):
+        """strike_type='between' → direction 'between', floor/cap both set."""
+        meta = _meta("KXHIGHNY-26MAR01-B45.5", "between", floor_strike=44.0, cap_strike=46.0)
+        result = _parse_kalshi_ticker(meta, "nyc")
+        assert result is not None
+        assert result["direction"] == "between"
+        assert result["floor_f"] == pytest.approx(44.0)
+        assert result["cap_f"] == pytest.approx(46.0)
+
+    def test_ticker_only_fallback_direction_is_unknown(self):
+        """
+        Without live market metadata, the B/T letter must NOT be used to
+        guess direction (root-caused 2026-08-13: the bot bought YES on a
+        ticker it misread as "above" when Kalshi's strike_type said
+        "less"). This ticker-only path exists for callers that don't have
+        the market payload handy, and returns direction=None on purpose —
+        callers must not use it for trading decisions.
+        """
+        result = _parse_kalshi_ticker("KXHIGHNY-26MAR01-B45.5", "nyc")
+        assert result is not None
+        assert result["direction"] is None
+        assert result["threshold_f"] == pytest.approx(45.5)
 
     def test_invalid_ticker_returns_none(self):
         assert _parse_kalshi_ticker("KXHIGHNY-26MAR01", "nyc") is None
         assert _parse_kalshi_ticker("KXHIGHNY-26MAR01-X45.5", "nyc") is None
         assert _parse_kalshi_ticker("", "nyc") is None
+
+    def test_unknown_strike_type_returns_none(self):
+        meta = _meta("KXHIGHNY-26MAR01-B45.5", "unexpected_value")
+        assert _parse_kalshi_ticker(meta, "nyc") is None
 
 
 # ---------------------------------------------------------------------------
@@ -353,3 +404,102 @@ class TestOrderbookExtraction:
         assert prices["yes_ask"] == pytest.approx(0.56)   # 1 - 0.44
         assert prices["no_ask"]  == pytest.approx(0.48)   # 1 - 0.52
         assert prices["bid_ask_spread"] == pytest.approx(0.04)  # 0.56 - 0.52
+
+
+# ---------------------------------------------------------------------------
+# Low-temp market support — 2026-08-23, "Part 1" of the low-temp scope.
+# metric is now derived from which series a ticker belongs to, instead of
+# being hardcoded "high" in every branch of _parse_kalshi_ticker.
+# ---------------------------------------------------------------------------
+
+class TestMetricDerivation:
+
+    def test_every_high_series_derives_high(self):
+        for series in CITY_SERIES.values():
+            assert _metric_for_ticker(f"{series}-26MAR01-B45.5") == "high"
+
+    def test_every_low_series_derives_low(self):
+        for series in LOW_SERIES.values():
+            assert _metric_for_ticker(f"{series}-26MAR01-B45.5") == "low"
+
+    def test_unknown_series_defaults_high(self):
+        """Preserves prior behavior for anything that isn't a known series,
+        rather than failing closed on something unexpected."""
+        assert _metric_for_ticker("KXSOMETHINGELSE-26MAR01-B45.5") == "high"
+
+    def test_parse_kalshi_ticker_tags_high_series_as_high(self):
+        meta = _meta("KXHIGHNY-26MAR01-B45.5", "greater", floor_strike=45.5)
+        result = _parse_kalshi_ticker(meta, "nyc")
+        assert result["metric"] == "high"
+
+    def test_parse_kalshi_ticker_tags_low_series_as_low(self):
+        meta = _meta("KXLOWTNYC-26MAR01-B45.5", "greater", floor_strike=45.5)
+        result = _parse_kalshi_ticker(meta, "nyc")
+        assert result["metric"] == "low"
+
+    def test_low_series_ticker_only_fallback_still_tags_low(self):
+        """The no-market-metadata fallback path must also get metric right —
+        it used to hardcode "high" unconditionally here too."""
+        result = _parse_kalshi_ticker("KXLOWTCHI-26MAR01-B45.5", "chicago")
+        assert result["metric"] == "low"
+        assert result["direction"] is None  # still unknown without live metadata
+
+    def test_low_series_between_bracket_tags_low(self):
+        meta = _meta("KXLOWTMIA-26MAR01-B45.5", "between", floor_strike=44.0, cap_strike=46.0)
+        result = _parse_kalshi_ticker(meta, "miami")
+        assert result["metric"] == "low"
+        assert result["direction"] == "between"
+
+    def test_city_series_and_low_series_have_the_same_cities(self):
+        """Every city that trades highs should have a low counterpart
+        registered too, or WEATHER_LOW_TEMP_ENABLED would silently skip it."""
+        assert set(CITY_SERIES.keys()) == set(LOW_SERIES.keys())
+
+
+# ---------------------------------------------------------------------------
+# WEATHER_LOW_TEMP_ENABLED gating — fetch_kalshi_weather_markets must not
+# scan LOW_SERIES at all unless the flag is on (defaults off — the exit
+# safety net isn't low-temp-aware yet, see config.py).
+# ---------------------------------------------------------------------------
+
+class TestLowTempGating:
+
+    def test_flag_off_only_scans_high_series(self, monkeypatch):
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+        from backend.config import settings
+        from backend.data import kalshi_markets
+
+        monkeypatch.setattr(settings, "WEATHER_LOW_TEMP_ENABLED", False)
+        scanned_series = []
+
+        async def fake_collect(client, city_key, series, today, rejected):
+            scanned_series.append(series)
+            return []
+
+        with patch.object(kalshi_markets, "kalshi_credentials_present", return_value=True), \
+             patch.object(kalshi_markets, "KalshiClient"), \
+             patch.object(kalshi_markets, "_collect_candidates", side_effect=fake_collect):
+            asyncio.run(kalshi_markets.fetch_kalshi_weather_markets(["nyc"]))
+
+        assert scanned_series == [CITY_SERIES["nyc"]]
+
+    def test_flag_on_scans_both_high_and_low_series(self, monkeypatch):
+        import asyncio
+        from unittest.mock import patch
+        from backend.config import settings
+        from backend.data import kalshi_markets
+
+        monkeypatch.setattr(settings, "WEATHER_LOW_TEMP_ENABLED", True)
+        scanned_series = []
+
+        async def fake_collect(client, city_key, series, today, rejected):
+            scanned_series.append(series)
+            return []
+
+        with patch.object(kalshi_markets, "kalshi_credentials_present", return_value=True), \
+             patch.object(kalshi_markets, "KalshiClient"), \
+             patch.object(kalshi_markets, "_collect_candidates", side_effect=fake_collect):
+            asyncio.run(kalshi_markets.fetch_kalshi_weather_markets(["nyc"]))
+
+        assert set(scanned_series) == {CITY_SERIES["nyc"], LOW_SERIES["nyc"]}

@@ -55,6 +55,31 @@ def _make_db(trades):
     return db
 
 
+def _make_client(ticker, strike_type, floor_strike=None, cap_strike=None):
+    """
+    Mock KalshiClient whose get_market() returns strike_type/floor_strike/
+    cap_strike — the authoritative fields _resolve_city_from_ticker needs to
+    determine direction. evaluate_open_positions_for_exit requires a client
+    for this (see its docstring: "callers doing exit/kill-switch comparisons
+    should always pass a client" — ticker-only parsing can't tell "above"
+    from "below" from the B/T letter alone, root-caused 2026-08-13).
+
+    `ticker` must be included in the returned market dict — a real Kalshi
+    market payload carries its own ticker, and _parse_kalshi_ticker reads it
+    from there (not from the original lookup argument) when given a dict.
+    """
+    client = MagicMock()
+    client.get_market = AsyncMock(return_value={
+        "market": {
+            "ticker":       ticker,
+            "strike_type":  strike_type,
+            "floor_strike": floor_strike,
+            "cap_strike":   cap_strike,
+        }
+    })
+    return client
+
+
 # ---------------------------------------------------------------------------
 # Group 1: NWS High-Water Mark Cache
 # ---------------------------------------------------------------------------
@@ -81,17 +106,34 @@ class TestNWSHighWaterMarkCache:
         assert r2 == pytest.approx(85.0)
         assert mock_obs.call_count == 1
 
+    def test_low_water_mark_shares_the_high_cache_entry(self):
+        """Added 2026-08-23 (low-temp Part 2): fetch_station_low_water_mark()
+        must share one underlying NWS fetch with the high version, not
+        double the request rate — both read the same cached {high, low} obs."""
+        from backend.data.weather import fetch_station_high_water_mark, fetch_station_low_water_mark
+
+        mock_obs = AsyncMock(return_value={"high": 85.0, "low": 70.0})
+        target = date(2026, 8, 10)
+
+        with patch("backend.data.weather.fetch_nws_observed_temperature", mock_obs):
+            high = asyncio.run(fetch_station_high_water_mark("nyc", target))
+            low = asyncio.run(fetch_station_low_water_mark("nyc", target))
+
+        assert high == pytest.approx(85.0)
+        assert low == pytest.approx(70.0)
+        assert mock_obs.call_count == 1, "the second call (for low) must hit the shared cache, not NWS again"
+
     def test_cache_expires_after_ttl(self):
         """After 300s the cache entry must be treated as stale and NWS re-queried."""
         import backend.data.weather as wx
         from backend.data.weather import fetch_station_high_water_mark
 
         target = date(2026, 8, 10)
-        cache_key = f"nws_hwm_nyc_{target.isoformat()}"
+        cache_key = f"nws_obs_nyc_{target.isoformat()}"
 
         # Pre-seed cache with a timestamp in the past (beyond TTL)
         stale_ts = time.time() - (wx._NWS_OBS_CACHE_TTL + 1)
-        wx._nws_obs_cache[cache_key] = (83.0, stale_ts)
+        wx._nws_obs_cache[cache_key] = ({"high": 83.0, "low": 68.0}, stale_ts)
 
         fresh_mock = AsyncMock(return_value={"high": 87.0, "low": 71.0})
         with patch("backend.data.weather.fetch_nws_observed_temperature", fresh_mock):
@@ -117,10 +159,12 @@ class TestNWSHighWaterMarkCache:
         assert r2 is None
         # Both calls must have reached NWS — no caching of None
         assert none_mock.call_count == 2
-        assert f"nws_hwm_nyc_{target.isoformat()}" not in wx._nws_obs_cache
+        assert f"nws_obs_nyc_{target.isoformat()}" not in wx._nws_obs_cache
 
     def test_missing_high_key_returns_none(self):
-        """obs dict with only 'low' key (no 'high') must return None and not cache."""
+        """obs dict with only 'low' key (no 'high') must return None for the
+        high-water-mark and must NOT be cached — a partial reading shouldn't
+        get either metric stuck with a cached result missing its own field."""
         from backend.data.weather import fetch_station_high_water_mark
         import backend.data.weather as wx
 
@@ -131,7 +175,22 @@ class TestNWSHighWaterMarkCache:
             result = asyncio.run(fetch_station_high_water_mark("nyc", target))
 
         assert result is None
-        assert f"nws_hwm_nyc_{target.isoformat()}" not in wx._nws_obs_cache
+        assert f"nws_obs_nyc_{target.isoformat()}" not in wx._nws_obs_cache
+
+    def test_missing_low_key_returns_none(self):
+        """Mirror of the above for fetch_station_low_water_mark — added
+        2026-08-23 alongside the low-temp Part 2 work."""
+        from backend.data.weather import fetch_station_low_water_mark
+        import backend.data.weather as wx
+
+        target = date(2026, 8, 10)
+        high_only_mock = AsyncMock(return_value={"high": 90.0})
+
+        with patch("backend.data.weather.fetch_nws_observed_temperature", high_only_mock):
+            result = asyncio.run(fetch_station_low_water_mark("nyc", target))
+
+        assert result is None
+        assert f"nws_obs_nyc_{target.isoformat()}" not in wx._nws_obs_cache
 
     def test_city_key_passthrough(self):
         """fetch_station_high_water_mark must forward city_key to fetch_nws_observed_temperature."""
@@ -200,9 +259,10 @@ class TestExitEvaluation:
             direction="yes",
         )
         db = _make_db([trade])
+        client = _make_client("KXHIGHNY-26AUG10-B85.0", "greater", floor_strike=85.0)
 
         with patch(_EVAL_PATH, AsyncMock(return_value=88.0)):
-            results = asyncio.run(evaluate_open_positions_for_exit(db))
+            results = asyncio.run(evaluate_open_positions_for_exit(db, client))
 
         assert len(results) == 1
         assert results[0]["outcome"] == "yes_wins"
@@ -218,9 +278,10 @@ class TestExitEvaluation:
             direction="yes",
         )
         db = _make_db([trade])
+        client = _make_client("KXHIGHNY-26AUG10-B85.0", "greater", floor_strike=85.0)
 
         with patch(_EVAL_PATH, AsyncMock(return_value=86.5)):
-            results = asyncio.run(evaluate_open_positions_for_exit(db))
+            results = asyncio.run(evaluate_open_positions_for_exit(db, client))
 
         assert results == []
 
@@ -233,9 +294,10 @@ class TestExitEvaluation:
             direction="no",
         )
         db = _make_db([trade])
+        client = _make_client("KXHIGHNY-26AUG10-B85.0", "greater", floor_strike=85.0)
 
         with patch(_EVAL_PATH, AsyncMock(return_value=88.0)):
-            results = asyncio.run(evaluate_open_positions_for_exit(db))
+            results = asyncio.run(evaluate_open_positions_for_exit(db, client))
 
         assert len(results) == 1
         assert results[0]["outcome"] == "yes_wins"
@@ -250,9 +312,10 @@ class TestExitEvaluation:
             direction="yes",
         )
         db = _make_db([trade])
+        client = _make_client("KXHIGHNY-26AUG10-B85.0", "greater", floor_strike=85.0)
 
         with patch(_EVAL_PATH, AsyncMock(return_value=82.0)):
-            results = asyncio.run(evaluate_open_positions_for_exit(db))
+            results = asyncio.run(evaluate_open_positions_for_exit(db, client))
 
         assert len(results) == 1
         assert results[0]["outcome"] == "no_wins"
@@ -268,9 +331,10 @@ class TestExitEvaluation:
             direction="no",
         )
         db = _make_db([trade])
+        client = _make_client("KXHIGHTBOS-26AUG10-T85.0", "less", cap_strike=85.0)
 
         with patch(_EVAL_PATH, AsyncMock(return_value=88.5)):
-            results = asyncio.run(evaluate_open_positions_for_exit(db))
+            results = asyncio.run(evaluate_open_positions_for_exit(db, client))
 
         assert len(results) == 1
         assert results[0]["outcome"] == "no_wins"
@@ -303,3 +367,81 @@ class TestExitEvaluation:
             results = asyncio.run(evaluate_open_positions_for_exit(db))
 
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# Group 4: Exit Evaluation Logic — low-temp markets, 2026-08-23 (Part 2)
+# ---------------------------------------------------------------------------
+
+_EVAL_LOW_PATH = "backend.data.weather.fetch_station_low_water_mark"
+
+
+class TestLowMetricExitEvaluation:
+
+    def test_low_ticker_reads_the_low_water_mark_not_the_high(self):
+        """A KXLOWT... ticker must call fetch_station_low_water_mark, and
+        must NOT call fetch_station_high_water_mark at all — root-caused
+        2026-08-23: this used to always read the high water mark regardless
+        of metric, comparing the wrong physical quantity for low contracts."""
+        from backend.core.weather_signals import evaluate_open_positions_for_exit
+
+        trade = _make_trade(
+            market_ticker="KXLOWTNYC-26AUG10-B60.0",
+            direction="yes",
+        )
+        db = _make_db([trade])
+        client = _make_client("KXLOWTNYC-26AUG10-B60.0", "greater", floor_strike=60.0)
+
+        low_mock = AsyncMock(return_value=63.0)
+        with patch(_EVAL_LOW_PATH, low_mock), \
+             patch(_EVAL_PATH, AsyncMock(side_effect=AssertionError("must not call the HIGH water mark for a low-metric ticker"))):
+            results = asyncio.run(evaluate_open_positions_for_exit(db, client))
+
+        assert len(results) == 1
+        assert results[0]["outcome"] == "yes_wins"
+        assert results[0]["trade_wins"] is True
+        low_mock.assert_called_once()
+
+    def test_yes_low_above_confirmed_loss(self):
+        """YES trade on low 'above 60°F' (betting a warm night), NWS low
+        shows 55°F (below the 2°F buffer) → NO wins → trade_wins=False."""
+        from backend.core.weather_signals import evaluate_open_positions_for_exit
+
+        trade = _make_trade(
+            market_ticker="KXLOWTCHI-26AUG10-B60.0",
+            direction="yes",
+        )
+        db = _make_db([trade])
+        client = _make_client("KXLOWTCHI-26AUG10-B60.0", "greater", floor_strike=60.0)
+
+        with patch(_EVAL_LOW_PATH, AsyncMock(return_value=55.0)):
+            results = asyncio.run(evaluate_open_positions_for_exit(db, client))
+
+        assert len(results) == 1
+        assert results[0]["outcome"] == "no_wins"
+        assert results[0]["trade_wins"] is False
+
+    def test_low_metric_skips_trend_stop_projection(self):
+        """Even with WEATHER_EARLY_EXITS_ENABLED on and a live client
+        available, a low-metric position must NOT reach the trend_stop
+        projection — that logic assumes a warming-toward-peak trend, wrong
+        physics for a low-temp contract (see the 2026-08-23 comment in
+        evaluate_open_positions_for_exit). Simulate "not yet decided" (obs
+        inside the buffer) so it would fall through to trend_stop if the
+        low-metric skip weren't there."""
+        from backend.core.weather_signals import evaluate_open_positions_for_exit
+        from backend.config import settings
+
+        trade = _make_trade(
+            market_ticker="KXLOWTMIA-26AUG10-B60.0",
+            direction="yes",
+        )
+        db = _make_db([trade])
+        client = _make_client("KXLOWTMIA-26AUG10-B60.0", "greater", floor_strike=60.0)
+
+        # 60.5 is inside the 2°F EXIT_BUFFER_F around 60 — "not yet decided".
+        with patch(_EVAL_LOW_PATH, AsyncMock(return_value=60.5)), \
+             patch.object(settings, "WEATHER_EARLY_EXITS_ENABLED", True):
+            results = asyncio.run(evaluate_open_positions_for_exit(db, client))
+
+        assert results == []  # no trend_stop entry, no settlement entry
