@@ -1,6 +1,6 @@
 """Database models and connection for the weather trading bot."""
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, JSON, text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Date, Boolean, JSON, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import inspect
@@ -51,6 +51,25 @@ class Trade(Base):
     limit_price     = Column(Float,    nullable=True)  # resting bid price (0–1)
     order_placed_at = Column(DateTime, nullable=True)  # when order was submitted
     order_status    = Column(String,   nullable=True)  # "pending_fill", "filled", "cancelled", "timed_out"
+
+    # Trailing-stop tracking (position_liquidator_job, scheduler.py). Highest
+    # unrealised gain_pct observed for this open position since entry; None
+    # until the liquidator has evaluated it at least once. Monotonically
+    # non-decreasing while open — lets the exit logic detect a retracement
+    # from peak instead of only a flat profit-target level.
+    peak_gain_pct = Column(Float, nullable=True)
+
+    # Settlement provenance + reconciliation (2026-08-20). "official" =
+    # settle_pending_trades()'s real Kalshi API resolution — already ground
+    # truth, never needs reconciling. "nws_early" = force-settled off a live
+    # NWS observation crossing EXIT_BUFFER_F before Kalshi has officially
+    # resolved (see weather_signals.py's "settlement" exit_type) — a
+    # projection, not a certainty, so it's checked against the real result
+    # once available. "trend_stop" = a real market sale at the live bid, not
+    # a projection — already a realized transaction, nothing to reconcile.
+    settlement_source = Column(String, nullable=True)
+    reconciled_at = Column(DateTime, nullable=True)          # when checked against the official result
+    reconciliation_mismatch = Column(Boolean, nullable=True)  # True if the early call disagreed with it
 
 
 class BotState(Base):
@@ -147,6 +166,30 @@ class ScanLog(Base):
     error = Column(String, nullable=True)
 
 
+class ModelForecastLog(Base):
+    """
+    Per-model raw forecast log — one row per (city, model, fetch), used to
+    compute rolling per-model accuracy (see backend/data/weather.py's
+    get_model_weights). Deliberately separate from Signal.reasoning, which
+    only stores the already-BLENDED effective mean: down-weighting a model
+    that's currently running warm/cold requires each model's own number,
+    not the combined one.
+
+    Rows are cheap and append-only; the weighting function reads only the
+    latest row per (city_key, model_name, target_date) within its lookback
+    window, mirroring the "last prediction per date wins" pattern already
+    used by get_recent_bias.
+    """
+    __tablename__ = "model_forecast_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    city_key = Column(String, index=True)
+    target_date = Column(Date, index=True)
+    model_name = Column(String, index=True)  # "gfs" (incl. HRRR-blended), "ecmwf", "nws"
+    predicted_high_f = Column(Float)
+    logged_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 def init_db():
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)
@@ -175,13 +218,30 @@ def ensure_schema():
             with conn.begin():
                 conn.execute(text("ALTER TABLE trades ADD COLUMN market_type VARCHAR DEFAULT 'weather'"))
 
+    # Root-caused 2026-08-20: "DATETIME" is a SQLite/MySQL type name, not a
+    # valid Postgres one — Postgres wants "TIMESTAMP". Every DATETIME column
+    # in this loop was silently failing to add itself on Postgres (the
+    # broad except below swallows it as "column already exists" style
+    # noise). order_placed_at only actually exists on the live table
+    # because it happened to already be in the model when the table was
+    # first created via Base.metadata.create_all() (dialect-aware, unlike
+    # this raw-SQL fallback) — this exact ALTER TABLE path had never
+    # actually been exercised for a DATETIME column until reconciled_at
+    # below silently failed to appear. Same dialect check bot_state already
+    # uses further down, just applied here too.
+    dt_type = "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME"
+
     for col, coltype in [
         ("execution_type",  "TEXT"),
         ("order_id",        "TEXT"),
         ("limit_price",     "REAL"),
-        ("order_placed_at", "DATETIME"),
+        ("order_placed_at", dt_type),
         ("order_status",    "TEXT"),
         ("confidence",      "REAL"),
+        ("peak_gain_pct",   "REAL"),
+        ("settlement_source",       "TEXT"),
+        ("reconciled_at",           dt_type),
+        ("reconciliation_mismatch", "BOOLEAN"),
     ]:
         if col not in columns:
             with engine.connect() as conn:

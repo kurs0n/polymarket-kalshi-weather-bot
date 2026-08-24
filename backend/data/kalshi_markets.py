@@ -23,6 +23,41 @@ CITY_SERIES: Dict[str, str] = {
     "boston":     "KXHIGHTBOS",
 }
 
+# Low-temperature counterpart, added 2026-08-23 — Part 1 of the low-temp
+# scope. Confirmed live/liquid via direct Kalshi API queries before adding
+# (Kalshi runs several overlapping series names per city for some markets;
+# these are the ones that actually had open markets and a real orderbook
+# when checked, not a guessed naming pattern). Note the naming ISN'T a
+# clean "KXLOW" + CITY_SERIES suffix — e.g. NYC's high series is
+# "KXHIGHNY" but its live low series is "KXLOWTNYC", not "KXLOWNY" (which
+# exists as a series name but has zero open markets) — each was verified
+# independently, not derived from the high-series pattern.
+LOW_SERIES: Dict[str, str] = {
+    "nyc":        "KXLOWTNYC",
+    "chicago":    "KXLOWTCHI",
+    "miami":      "KXLOWTMIA",
+    "los_angeles":"KXLOWTLAX",
+    "denver":     "KXLOWTDEN",
+    "boston":     "KXLOWTBOS",
+}
+
+# Series ticker -> "high"/"low", built once from the two maps above. This
+# is what actually decides a market's `metric` (see _parse_kalshi_ticker) —
+# Kalshi's own market payload has no such field; it's purely which series
+# we queried it under.
+_SERIES_METRIC: Dict[str, str] = {
+    **{series: "high" for series in CITY_SERIES.values()},
+    **{series: "low"  for series in LOW_SERIES.values()},
+}
+
+
+def _metric_for_ticker(ticker: str) -> str:
+    """Series prefix -> "high"/"low". Defaults to "high" for any ticker
+    that doesn't match a known series (preserves prior behavior rather
+    than failing closed on something unexpected)."""
+    series = ticker.split("-")[0]
+    return _SERIES_METRIC.get(series, "high")
+
 CITY_NAMES: Dict[str, str] = {
     "nyc":        "New York",
     "chicago":    "Chicago",
@@ -122,6 +157,15 @@ def _parse_kalshi_ticker(m, city_key: str) -> Optional[dict]:
     except ValueError:
         return None
 
+    # Root-caused 2026-08-23: this used to hardcode "metric": "high" in
+    # every branch below, unconditionally — harmless while only high-temp
+    # series were ever queried, but a market for the day's LOW would have
+    # been silently mislabeled "high" the moment low-temp series were
+    # added, feeding an inverted-tail probability into every downstream
+    # calculation. Kalshi's own market payload has no metric field to read
+    # this from; it's derived purely from which series the ticker belongs to.
+    metric = _metric_for_ticker(ticker)
+
     if market_meta is None:
         # No live market payload available — direction is unknown.  Return
         # the date/ticker-derived info only; callers must not rely on
@@ -132,7 +176,7 @@ def _parse_kalshi_ticker(m, city_key: str) -> Optional[dict]:
         )
         return {
             "target_date": target_date,
-            "metric":      "high",
+            "metric":      metric,
             "direction":   None,
             "threshold_f": float(match.group(5)),
             "floor_f":     None,
@@ -148,7 +192,7 @@ def _parse_kalshi_ticker(m, city_key: str) -> Optional[dict]:
             return None
         return {
             "target_date": target_date,
-            "metric":      "high",
+            "metric":      metric,
             "direction":   "above",
             "threshold_f": float(floor_strike),
             "floor_f":     None,
@@ -159,7 +203,7 @@ def _parse_kalshi_ticker(m, city_key: str) -> Optional[dict]:
             return None
         return {
             "target_date": target_date,
-            "metric":      "high",
+            "metric":      metric,
             "direction":   "below",
             "threshold_f": float(cap_strike),
             "floor_f":     None,
@@ -170,7 +214,7 @@ def _parse_kalshi_ticker(m, city_key: str) -> Optional[dict]:
             return None
         return {
             "target_date": target_date,
-            "metric":      "high",
+            "metric":      metric,
             "direction":   "between",
             "threshold_f": (float(floor_strike) + float(cap_strike)) / 2.0,
             "floor_f":     float(floor_strike),
@@ -454,13 +498,27 @@ async def fetch_kalshi_weather_markets(
       - Both YES and NO sides have active bids in the live orderbook
       - Derived spread (yes_ask - yes_bid) ≤ MAX_BID_ASK_SPREAD_CENTS / 100
       - yes_ask is between 0.02 and 0.98 (not effectively resolved)
+
+    Scans LOW_SERIES alongside CITY_SERIES (high) only when
+    settings.WEATHER_LOW_TEMP_ENABLED is True — see that flag's docstring
+    in config.py for why it defaults off (the exit safety net isn't
+    low-temp-aware yet).
     """
     if not kalshi_credentials_present():
         return []
 
+    from backend.config import settings
+
     client = KalshiClient()
     today  = date.today()
     cities = city_keys or list(CITY_SERIES.keys())
+
+    # (city_key, series, metric) targets to scan — high always, low only
+    # behind the flag. A city with no low series entry is skipped for low
+    # (there isn't one for every city_key that might be passed in here).
+    targets: List[tuple] = [(c, CITY_SERIES[c], "high") for c in cities if c in CITY_SERIES]
+    if settings.WEATHER_LOW_TEMP_ENABLED:
+        targets += [(c, LOW_SERIES[c], "low") for c in cities if c in LOW_SERIES]
 
     rejected: Dict[str, int] = {
         _PriceRejectReason.NO_BID:          0,
@@ -475,10 +533,7 @@ async def fetch_kalshi_weather_markets(
 
     # ---- Phase 1: collect candidate tickers --------------------------------
     all_candidates: List[dict] = []
-    for city_key in cities:
-        series = CITY_SERIES.get(city_key)
-        if not series:
-            continue
+    for city_key, series, metric in targets:
         try:
             candidates = await _collect_candidates(
                 client, city_key, series, today, rejected
@@ -489,7 +544,7 @@ async def fetch_kalshi_weather_markets(
 
     logger.info(
         f"Kalshi: {len(all_candidates)} candidate tickers "
-        f"across {len(cities)} cities — fetching orderbooks..."
+        f"across {len(targets)} city/metric series — fetching orderbooks..."
     )
 
     # ---- Phase 2: concurrent orderbook fetches -----------------------------

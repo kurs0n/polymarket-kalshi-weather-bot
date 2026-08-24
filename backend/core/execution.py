@@ -1,6 +1,6 @@
 """Simulated and live order execution for weather temperature markets."""
 import logging
-from datetime import datetime, date as _date
+from datetime import datetime
 from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -35,21 +35,27 @@ MAX_PAPER_SPREAD = 0.10   # 10¢ — wider than this and the paper fill is rejec
 # now that the graded source is one step removed from what we're polling.
 _KILL_SWITCH_BUFFER_F = 2.0
 
-# Velocity kill switch: projected peak = current_temp + hours_to_peak × trend.
-# If projected_peak > bracket_ceiling, reject even when current temp is still safe.
+# Velocity projection: projected peak = current_temp + hours_to_peak × trend.
 # Assumed local diurnal peak hour (24h clock) — 3 PM is a conservative CONUS estimate.
+#
+# Root-caused 2026-08-17: this used to be an ENTRY guardrail (VELOCITY_KILL)
+# gated behind a blanket TIME_GATE that blocked all same-day entries outside
+# 11h-14h local. User feedback: entering early is the main source of edge —
+# buying a mispriced contract before the crowd catches up IS the strategy,
+# and the model's probability estimate doesn't depend on time-of-day or
+# METAR at all. Blocking entry to protect one unreliable-before-11h check
+# was throwing away the entry edge for no real safety benefit outside that
+# one check. Moved to the exit side (see position_liquidator_job /
+# evaluate_open_positions_for_exit in weather_signals.py): the trend
+# projection is far more useful as a live "dump it, the trajectory just
+# turned against us" monitor on an OPEN position than as a reason to refuse
+# to open one. _hours_until_diurnal_peak() below is still used there.
 _DIURNAL_PEAK_HOUR = 15
 
 # Tail-risk guard: refuse below-ceiling bets trading < this market probability
 # when a warming trend is active. A contract at 10¢ looks cheap, but a warming
 # METAR means the model probability is stale and the "edge" is an artefact.
 _LOW_PROB_TAIL_THRESHOLD = 0.20
-
-# Execution time window: only fire automated orders for same-day contracts
-# within this local-hour range. Before 11h the morning heating curve hasn't
-# stabilised; after 14h the daily peak is likely in the past or imminent.
-_TRADE_WINDOW_START_H = 11
-_TRADE_WINDOW_END_H   = 14
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -70,44 +76,34 @@ def _hours_until_diurnal_peak(city_key: str) -> float:
 
 async def _check_physical_guardrails(signal) -> Optional[str]:
     """
-    Run three live-data guardrails before any order is placed.
+    Run live-data guardrails before any order is placed.
 
     Returns a rejection reason string, or None when the trade is safe.
 
     Checks (in order):
-      1. Time window gate — same-day contracts only execute 11h–14h local time,
-         after the morning diurnal heating slope has stabilised.
-      2. Absolute floor kill switch — live METAR has already pushed the station
-         temperature within 1.5°F of the bracket ceiling.  The daily high
+      1. Absolute floor kill switch — live METAR has already pushed the station
+         temperature within 2.0°F of the bracket ceiling.  The daily high
          cannot decrease once observed, so the bet is physically lost.
-      3. Warming velocity kill switch — even if the current reading is safe,
-         the current °F/hr trend projected to the 3 PM peak will breach the
-         bracket ceiling.
-      4. Tail-risk probability guard — a below-ceiling bet priced below 20¢
+      2. Tail-risk probability guard — a below-ceiling bet priced below 20¢
          combined with a positive warming trend is a mispricing trap: the
          model probability is stale; the cheap price reflects the market's
          live METAR access, not a genuine inefficiency.
 
-    Checks 2–4 require a live METAR reading.  If the NWS station is
-    unreachable, only the time-window gate runs — the trade is allowed through
-    rather than blocked on an infrastructure failure.
+    No time-of-day gate: entering early (any hour) is the main source of
+    edge here — see the 2026-08-17 note above _DIURNAL_PEAK_HOUR. The
+    warming-velocity trend projection that used to gate entry now runs on
+    the EXIT side instead (position_liquidator_job / evaluate_open_positions_
+    for_exit), where it can proactively close a position whose trajectory
+    has turned bad rather than refuse to open one in the first place.
+
+    Both checks require a live METAR reading.  If the NWS station is
+    unreachable, the trade is allowed through rather than blocked on an
+    infrastructure failure.
     """
     from backend.data.weather import CITY_CONFIG, fetch_metar_current
 
     market = signal.market
     city_key = market.city_key
-    tz_str = CITY_CONFIG.get(city_key, {}).get("timezone", "UTC")
-    local_now = datetime.now(ZoneInfo(tz_str))
-    local_hour = local_now.hour
-
-    # ── 1. Execution time window (same-day contracts only) ────────────────────
-    is_same_day = (market.target_date == _date.today())
-    if is_same_day and not (_TRADE_WINDOW_START_H <= local_hour <= _TRADE_WINDOW_END_H):
-        return (
-            f"TIME_GATE: local hour {local_hour:02d}h is outside the "
-            f"{_TRADE_WINDOW_START_H:02d}h–{_TRADE_WINDOW_END_H:02d}h execution window "
-            f"for same-day contract {market.market_id}"
-        )
 
     # ── Fetch live METAR (cached) ─────────────────────────────────────────────
     metar = await fetch_metar_current(city_key)
@@ -119,7 +115,6 @@ async def _check_physical_guardrails(signal) -> Optional[str]:
 
     current_temp = metar.observed_temp_f
     trend        = metar.trend_f_per_hour   # °F/hr; +ve = warming
-    hours_to_peak = _hours_until_diurnal_peak(city_key)
 
     # Determine whether this trade WINS only if the daily high stays BELOW
     # a ceiling.  Both legs of the below-ceiling bet share the same kill-switch
@@ -135,7 +130,7 @@ async def _check_physical_guardrails(signal) -> Optional[str]:
     if betting_high_stays_below:
         ceiling = market.threshold_f
 
-        # ── 2. Absolute floor kill switch ─────────────────────────────────────
+        # ── 1. Absolute floor kill switch ─────────────────────────────────────
         if current_temp >= ceiling - _KILL_SWITCH_BUFFER_F:
             return (
                 f"KILL_SWITCH: {metar.station} live temp {current_temp:.1f}°F "
@@ -144,17 +139,7 @@ async def _check_physical_guardrails(signal) -> Optional[str]:
                 f"has breached bracket threshold."
             )
 
-        # ── 3. Warming velocity kill switch ───────────────────────────────────
-        if trend > 0 and hours_to_peak > 0:
-            projected_peak = current_temp + hours_to_peak * trend
-            if projected_peak > ceiling:
-                return (
-                    f"VELOCITY_KILL: projected peak {projected_peak:.1f}°F "
-                    f"({current_temp:.1f}°F + {hours_to_peak:.1f}h × {trend:+.2f}°F/hr) "
-                    f"will exceed bracket ceiling {ceiling:.1f}°F"
-                )
-
-    # ── 4. Low-probability tail guard ────────────────────────────────────────
+    # ── 2. Low-probability tail guard ────────────────────────────────────────
     entry_price = market.yes_price if signal.direction == "yes" else market.no_price
     if (
         entry_price < _LOW_PROB_TAIL_THRESHOLD
@@ -346,7 +331,24 @@ async def execute_live_trade(signal, trade_size: float) -> Optional[Trade]:
         order = resp.get("order", {})
         trade.order_id = order.get("order_id")
     except Exception as e:
-        logger.warning(f"Kalshi order placement failed for {market.market_id}: {e}")
-        trade.order_status = "filled"
+        # Root-caused 2026-08-20: this used to set order_status="filled" on
+        # ANY exception here — network error, rate limit, insufficient
+        # balance, anything — "so the position is tracked rather than
+        # silently dropped." That fabricates a filled position that was
+        # never actually placed on Kalshi: the caller (scheduler.py) only
+        # checks `if trade is None`, so a fake "filled" trade sailed
+        # straight through, debited the full stake from bankroll, and later
+        # settled against a real weather outcome as if it were a real bet.
+        # In live mode this silently desyncs the bot's ledger from the
+        # actual Kalshi account, worst-case exactly when the API is having
+        # problems. Returning None here instead — same path the physical
+        # guardrails already use for "don't place this" — is honest about
+        # not knowing whether the order landed, rather than confidently
+        # recording the wrong answer. It doesn't solve the rarer opposite
+        # case (order truly filled on Kalshi's side but the response was
+        # lost) — that needs an actual reconciliation against Kalshi's own
+        # order/position API, which this fix does not attempt.
+        logger.error(f"Kalshi order placement failed for {market.market_id}: {e}")
+        return None
 
     return trade

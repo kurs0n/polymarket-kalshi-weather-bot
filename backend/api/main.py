@@ -3,7 +3,7 @@ from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 import asyncio
 import os
 
@@ -65,6 +65,17 @@ class TradeResponse(BaseModel):
     settled: bool
     result: str
     pnl: Optional[float]
+    model_probability: Optional[float] = None
+    edge_at_entry: Optional[float] = None
+    confidence: Optional[float] = None
+    # Added 2026-08-22 so the dashboard can show early exits (trailing-stop /
+    # price-stop-loss / METAR liquidations) distinctly from trades held to a
+    # real settlement, and how much of a position's peak gain was actually
+    # captured before it sold — see position_liquidator_job in scheduler.py.
+    execution_type: Optional[str] = None       # "liquidated" | "simulated" | "maker_limit" | "timed_out" | ...
+    peak_gain_pct: Optional[float] = None       # highest unrealised gain ever seen, tracked every cycle
+    settlement_value: Optional[float] = None    # exit price per contract (liquidation) or final settlement value
+    settlement_source: Optional[str] = None     # "official" | "nws_early" | "trend_stop" | None (not yet settled)
 
 
 class BotStats(BaseModel):
@@ -94,15 +105,32 @@ class CalibrationSummary(BaseModel):
 
 
 class WeatherForecastResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}  # allow model_weights/model_probability field names
+
     city_key: str
     city_name: str
     target_date: str
-    mean_high: float
+    mean_high: float          # raw GFS ensemble mean — NOT what the bot trades on, see effective_mean_high
     std_high: float
     mean_low: float
     std_low: float
     num_members: int
     ensemble_agreement: float
+
+    # The actual number generate_weather_signal() trades on: GFS blended
+    # with HRRR (solar window), ECMWF/NWS cross-checks, the rolling
+    # per-city bias correction, and (when enough settled history exists)
+    # the rolling per-model accuracy weighting — see
+    # EnsembleForecast.effective_mean_high() in backend/data/weather.py.
+    # Exposed separately from mean_high (not as a replacement) so the
+    # dashboard can show both the raw ensemble and the blend that actually
+    # drove the trade, instead of silently only ever showing the former.
+    effective_mean_high: float
+    hrrr_high: Optional[float] = None
+    ecmwf_high: Optional[float] = None
+    nws_high: Optional[float] = None
+    bias_correction_f: float = 0.0
+    model_weights: Optional[Dict[str, float]] = None
 
 
 class WeatherMarketResponse(BaseModel):
@@ -122,6 +150,8 @@ class WeatherMarketResponse(BaseModel):
 
 
 class WeatherSignalResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}  # allow model_probability field name
+
     market_id: str
     city_key: str
     city_name: str
@@ -133,7 +163,9 @@ class WeatherSignalResponse(BaseModel):
     market_probability: float
     edge: float
     confidence: float
+    kelly_fraction: float = 0.0
     suggested_size: float
+    sources: List[str] = []
     reasoning: str
     ensemble_mean: float
     ensemble_std: float
@@ -142,11 +174,21 @@ class WeatherSignalResponse(BaseModel):
     platform: str = "polymarket"
 
 
+class TailCalibrationBucket(BaseModel):
+    """One row of the rolling empirical tail-calibration table — see
+    backend/core/calibration.py. Only buckets with enough settled trade
+    history to be trusted (>= MIN_BUCKET_SAMPLES) ever appear here."""
+    bucket: str                # e.g. "95%-100%"
+    n: int
+    empirical_win_rate: float
+
+
 class DashboardData(BaseModel):
     stats: BotStats
     recent_trades: List[TradeResponse]
     equity_curve: List[dict]
     calibration: Optional[CalibrationSummary] = None
+    tail_calibration: List[TailCalibrationBucket] = []
     weather_signals: List[WeatherSignalResponse] = []
     weather_forecasts: List[WeatherForecastResponse] = []
 
@@ -355,7 +397,14 @@ async def get_trades(
             timestamp=t.timestamp,
             settled=t.settled,
             result=t.result,
-            pnl=t.pnl
+            pnl=t.pnl,
+            model_probability=t.model_probability,
+            edge_at_entry=t.edge_at_entry,
+            confidence=t.confidence,
+            execution_type=t.execution_type,
+            peak_gain_pct=t.peak_gain_pct,
+            settlement_value=t.settlement_value,
+            settlement_source=t.settlement_source,
         )
         for t in trades
     ]
@@ -420,7 +469,7 @@ async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
         market_type="weather",
         direction=signal.direction,
         entry_price=entry_price,
-        size=min(signal.suggested_size, state.bankroll * 0.05, settings.WEATHER_MAX_TRADE_SIZE),
+        size=min(signal.suggested_size, state.bankroll * 0.05),
         model_probability=signal.model_probability,
         market_price_at_entry=signal.market_probability,
         edge_at_entry=signal.edge
@@ -522,7 +571,21 @@ def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
 
 @app.get("/api/calibration")
 async def get_calibration(db: Session = Depends(get_db)):
-    """Return calibration data: predicted probability vs actual win rate."""
+    """
+    Return calibration data: predicted probability vs actual win rate.
+
+    Root-caused 2026-08-17: this used to bucket by raw model_probability
+    (P(YES)) but paired each bucket with outcome_correct, which is already
+    DIRECTION-aware (direction == actual_outcome). A high-confidence NO
+    signal at model_probability=0.05 (i.e. 95% confident in NO) landed in
+    the "0-5%" bucket labeled ~5% predicted, while its actual correctness
+    rate would show ~95% — looking like severe miscalibration when it was
+    really just an axis mismatch. Buckets are now keyed by the model's own
+    implied WIN probability for the side it actually predicted (same
+    correction used by backend/core/calibration.py's tail-calibration
+    table), which is the number outcome_correct is actually measuring
+    against.
+    """
     signals = db.query(Signal).filter(Signal.outcome_correct.isnot(None)).all()
 
     if not signals:
@@ -532,11 +595,12 @@ async def get_calibration(db: Session = Depends(get_db)):
     buckets_data = defaultdict(lambda: {"predicted_sum": 0.0, "correct": 0, "total": 0})
 
     for s in signals:
-        bin_start = int(s.model_probability * 100 // 5) * 5
+        win_prob = s.model_probability if s.direction in ("yes", "up") else (1.0 - s.model_probability)
+        bin_start = int(win_prob * 100 // 5) * 5
         bin_end = bin_start + 5
         bucket_key = f"{bin_start}-{bin_end}%"
 
-        buckets_data[bucket_key]["predicted_sum"] += s.model_probability
+        buckets_data[bucket_key]["predicted_sum"] += win_prob
         buckets_data[bucket_key]["total"] += 1
         if s.outcome_correct:
             buckets_data[bucket_key]["correct"] += 1
@@ -581,36 +645,75 @@ async def get_kalshi_status():
         }
 
 
+def _forecast_to_response(forecast) -> WeatherForecastResponse:
+    """
+    Build the API response for one EnsembleForecast, including the blended
+    effective_mean_high() the bot actually trades on (see the field's
+    docstring on WeatherForecastResponse) alongside the raw ensemble mean.
+    """
+    return WeatherForecastResponse(
+        city_key=forecast.city_key,
+        city_name=forecast.city_name,
+        target_date=forecast.target_date.isoformat(),
+        mean_high=forecast.mean_high,
+        std_high=forecast.std_high,
+        mean_low=forecast.mean_low,
+        std_low=forecast.std_low,
+        num_members=forecast.num_members,
+        ensemble_agreement=forecast.ensemble_agreement,
+        effective_mean_high=forecast.effective_mean_high(),
+        hrrr_high=forecast.hrrr_high,
+        ecmwf_high=forecast.ecmwf_high,
+        nws_high=forecast.nws_high,
+        bias_correction_f=forecast.bias_correction_f,
+        model_weights=forecast.model_weights,
+    )
+
+
+async def _get_weather_forecasts_impl() -> List[WeatherForecastResponse]:
+    """
+    Fetch one forecast per (city, target_date) actually in play — i.e. every
+    date the cached signals cover, not just today. Falls back to "today only,
+    every configured city" when there's no cached-signal history yet (cold
+    start / WEATHER_ENABLED just turned on), which reproduces the previous
+    behaviour rather than returning nothing.
+
+    Root-caused 2026-08-17: the old version always called
+    fetch_ensemble_forecast(city_key) with no target_date, defaulting to
+    date.today() — a city whose only actionable signal was for TOMORROW
+    still showed today's (different-day) forecast stats paired with it in
+    the UI, keyed only by city_key.
+    """
+    from backend.data.weather import fetch_ensemble_forecast, CITY_CONFIG
+    from backend.core.weather_signals import get_cached_weather_signals
+
+    city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
+
+    pairs = sorted({
+        (s.market.city_key, s.market.target_date)
+        for s in get_cached_weather_signals()
+        if s.market.city_key in CITY_CONFIG
+    })
+    if not pairs:
+        import datetime as _dt
+        today = _dt.date.today()
+        pairs = [(city_key, today) for city_key in city_keys if city_key in CITY_CONFIG]
+
+    forecasts = []
+    for city_key, target_date in pairs:
+        forecast = await fetch_ensemble_forecast(city_key, target_date)
+        if forecast:
+            forecasts.append(_forecast_to_response(forecast))
+    return forecasts
+
+
 @app.get("/api/weather/forecasts", response_model=List[WeatherForecastResponse])
 async def get_weather_forecasts():
-    """Get ensemble forecasts for configured cities."""
+    """Get ensemble forecasts for every (city, date) the current signals cover."""
     if not settings.WEATHER_ENABLED:
         return []
-
     try:
-        from backend.data.weather import fetch_ensemble_forecast, CITY_CONFIG
-
-        city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
-        forecasts = []
-
-        for city_key in city_keys:
-            if city_key not in CITY_CONFIG:
-                continue
-            forecast = await fetch_ensemble_forecast(city_key)
-            if forecast:
-                forecasts.append(WeatherForecastResponse(
-                    city_key=forecast.city_key,
-                    city_name=forecast.city_name,
-                    target_date=forecast.target_date.isoformat(),
-                    mean_high=forecast.mean_high,
-                    std_high=forecast.std_high,
-                    mean_low=forecast.mean_low,
-                    std_low=forecast.std_low,
-                    num_members=forecast.num_members,
-                    ensemble_agreement=forecast.ensemble_agreement,
-                ))
-
-        return forecasts
+        return await _get_weather_forecasts_impl()
     except Exception:
         return []
 
@@ -687,7 +790,9 @@ def _weather_signal_to_response(s) -> WeatherSignalResponse:
         market_probability=s.market_probability,
         edge=s.edge,
         confidence=s.confidence,
+        kelly_fraction=s.kelly_fraction,
         suggested_size=s.suggested_size,
+        sources=s.sources,
         reasoning=s.reasoning,
         ensemble_mean=s.ensemble_mean,
         ensemble_std=s.ensemble_std,
@@ -813,7 +918,14 @@ async def get_dashboard(db: Session = Depends(get_db)):
             timestamp=t.timestamp,
             settled=t.settled,
             result=t.result,
-            pnl=t.pnl
+            pnl=t.pnl,
+            model_probability=t.model_probability,
+            edge_at_entry=t.edge_at_entry,
+            confidence=t.confidence,
+            execution_type=t.execution_type,
+            peak_gain_pct=t.peak_gain_pct,
+            settlement_value=t.settlement_value,
+            settlement_source=t.settlement_source,
         )
         for t in trades
     ]
@@ -835,12 +947,26 @@ async def get_dashboard(db: Session = Depends(get_db)):
 
     calibration = _compute_calibration_summary(db)
 
+    tail_calibration_data = []
+    try:
+        from backend.core.calibration import get_calibration_table
+        table = await get_calibration_table()
+        tail_calibration_data = [
+            TailCalibrationBucket(
+                bucket=f"{lo:.0%}-{hi:.0%}",
+                n=entry["n"],
+                empirical_win_rate=entry["empirical_win_rate"],
+            )
+            for (lo, hi), entry in sorted(table.items())
+        ]
+    except Exception:
+        pass
+
     weather_signals_data = []
     weather_forecasts_data = []
     if settings.WEATHER_ENABLED:
         try:
             from backend.core.weather_signals import get_cached_weather_signals
-            from backend.data.weather import fetch_ensemble_forecast, CITY_CONFIG
 
             # Read the scheduled scan's cached result rather than running a
             # fresh live market scan on every dashboard poll (this endpoint
@@ -848,24 +974,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             # weather_signals.py for why that mattered.
             wx_signals = get_cached_weather_signals()
             weather_signals_data = [_weather_signal_to_response(s) for s in wx_signals]
-
-            city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
-            for city_key in city_keys:
-                if city_key not in CITY_CONFIG:
-                    continue
-                forecast = await fetch_ensemble_forecast(city_key)
-                if forecast:
-                    weather_forecasts_data.append(WeatherForecastResponse(
-                        city_key=forecast.city_key,
-                        city_name=forecast.city_name,
-                        target_date=forecast.target_date.isoformat(),
-                        mean_high=forecast.mean_high,
-                        std_high=forecast.std_high,
-                        mean_low=forecast.mean_low,
-                        std_low=forecast.std_low,
-                        num_members=forecast.num_members,
-                        ensemble_agreement=forecast.ensemble_agreement,
-                    ))
+            weather_forecasts_data = await _get_weather_forecasts_impl()
         except Exception:
             pass
 
@@ -874,6 +983,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
         recent_trades=recent_trades,
         equity_curve=equity_curve,
         calibration=calibration,
+        tail_calibration=tail_calibration_data,
         weather_signals=weather_signals_data,
         weather_forecasts=weather_forecasts_data,
     )

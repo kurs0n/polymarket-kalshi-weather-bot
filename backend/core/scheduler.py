@@ -2,13 +2,16 @@
 import asyncio
 from datetime import datetime, timedelta
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import func
 import logging
 
+from sqlalchemy import text
+
 from backend.config import settings
-from backend.models.database import SessionLocal, Trade, BotState, Signal
+from backend.models.database import SessionLocal, Trade, BotState, Signal, engine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("trading_bot")
@@ -20,12 +23,39 @@ scheduler: Optional[AsyncIOScheduler] = None
 event_log: List[dict] = []
 MAX_LOG_SIZE = 200
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Position liquidator thresholds (configurable here, not in settings, because
-# these are trading-strategy parameters rather than environment config).
-# ──────────────────────────────────────────────────────────────────────────────
-PROFIT_TARGET_PCT   = 0.50   # sell when unrealised gain ≥ 50% of entry cost
-PRICE_STOP_LOSS_PCT = 0.80   # sell when position has lost ≥ 80% of entry value
+# Position liquidator thresholds (WEATHER_PROFIT_TARGET_PCT,
+# WEATHER_PRICE_STOP_LOSS_PCT) moved to backend/config.py / .env 2026-08-16 —
+# same reasoning as the sizing settings above: a risk parameter that needs
+# tuning shouldn't require a code edit to change.
+
+# Trailing-stop / overnight de-risk tuning — see position_liquidator_job's
+# "Exit condition 1" for the full rationale and the live trade
+# (KXHIGHMIA-26AUG18-B93.5) that motivated replacing the flat profit target.
+OVERNIGHT_DERISK_LOCAL_HOUR     = 20   # 8 PM local — diurnal peak long past, less edge left to protect
+OVERNIGHT_ACTIVATION_MULTIPLIER = 0.5  # trail activates at half the normal gain threshold late in the day
+OVERNIGHT_TRAIL_MULTIPLIER      = 0.5  # ...and gives back half as much room before exiting
+
+
+def _trailing_stop_giveback(peak_gain_pct: float) -> float:
+    """
+    How many percentage points of gain the trailing stop lets a position
+    retrace from its peak before selling, once activated.
+
+    Root-caused 2026-08-21: a flat giveback (the old WEATHER_TRAILING_STOP_PCT
+    behavior) is a reasonable trail for a position that peaked at, say, 60%
+    gain, but on a cheap longshot that peaked at 700%+ it fires almost
+    immediately after any pullback and locks in a tiny fraction of what the
+    position was actually worth (see WEATHER_TRAILING_STOP_RATIO's comment
+    in config.py for the real trade that motivated this). Scaling the
+    giveback with how far the position ran fixes that without giving up
+    protection on modest gains — WEATHER_TRAILING_STOP_PCT is still the
+    floor, so a peak just past activation gets the same firm minimum trail
+    as before.
+    """
+    return max(
+        settings.WEATHER_TRAILING_STOP_PCT,
+        peak_gain_pct * settings.WEATHER_TRAILING_STOP_RATIO,
+    )
 
 # Re-entrancy guard: weather_scan_and_trade_job places live orders, so two
 # concurrent invocations (e.g. the scheduled interval firing while a manual
@@ -34,7 +64,90 @@ PRICE_STOP_LOSS_PCT = 0.80   # sell when position has lost ≥ 80% of entry valu
 # double up a real Kalshi order for the same city/date bracket. This lock
 # makes concurrent execution structurally impossible instead of relying on
 # every caller to coordinate timing.
+#
+# This is an asyncio.Lock, so it only protects against overlap WITHIN one
+# process/event loop. Root-caused 2026-08-17: several weather trades were
+# bought twice within minutes at bit-for-bit identical edge — impossible
+# for this lock to have missed if it were a same-process race. The actual
+# cause is cross-process: stop_scheduler() calls shutdown(wait=False) (see
+# below), which doesn't wait for an in-flight job to finish, and
+# start_scheduler()'s IntervalTrigger fires an immediate first run on
+# start(). Under `uvicorn --reload`, every file-change restart creates a
+# window where the OLD process's in-flight scan/trade loop is still
+# running while the NEW process's scheduler immediately starts its own —
+# two separate Python processes, each with its own independent
+# _scan_lock, both reading the same not-yet-committed DB state and both
+# deciding to buy the same signal. See _try_acquire_cross_process_scan_lock
+# below for the fix: a Postgres advisory lock, which (unlike this
+# asyncio.Lock) is visible to every process connected to the database.
 _scan_lock = asyncio.Lock()
+
+# Arbitrary but constant bigint key for the cross-process weather-scan
+# advisory lock — pg_advisory_lock just needs a stable int64, not anything
+# meaningful. Every process/connection using this same key contends for
+# the same named lock.
+_WEATHER_SCAN_LOCK_KEY = 823401773
+
+
+def _try_acquire_cross_process_scan_lock():
+    """
+    Postgres session-level advisory lock, held for the duration of one
+    weather_scan_and_trade_job run — the cross-process counterpart to
+    _scan_lock above (see its comment for the restart-race this closes).
+
+    Returns (conn, True) when the lock was acquired: caller MUST pass
+    `conn` to _release_cross_process_scan_lock() when done, in a finally
+    block, even on error — an unlocked advisory lock on a connection
+    returned to the pool would wedge every future scan behind a lock
+    nobody's still using.
+
+    Returns (None, False) when another process already holds it — the
+    caller should skip this run, same as the in-process lock's behavior.
+
+    Returns (None, True) — i.e. "treat as acquired, proceed" — when the DB
+    isn't Postgres (advisory locks are a Postgres-specific feature; local
+    sqlite dev/test setups are inherently single-process, so there's no
+    cross-process race to guard against there) or when the lock RPC itself
+    errors (a real infra problem, unrelated to the restart race this
+    exists for — same fail-open-on-infrastructure-failure posture as the
+    METAR/order-book guards in execution.py, rather than halting all
+    trading over a transient DB hiccup).
+    """
+    if engine.dialect.name != "postgresql":
+        return None, True
+
+    try:
+        conn = engine.connect()
+    except Exception as e:
+        logger.warning(f"Cross-process scan lock: connect failed, proceeding without it: {e}")
+        return None, True
+
+    try:
+        acquired = conn.execute(
+            text("SELECT pg_try_advisory_lock(:key)"), {"key": _WEATHER_SCAN_LOCK_KEY}
+        ).scalar()
+    except Exception as e:
+        logger.warning(f"Cross-process scan lock: acquire failed, proceeding without it: {e}")
+        conn.close()
+        return None, True
+
+    if not acquired:
+        conn.close()
+        return None, False
+
+    return conn, True
+
+
+def _release_cross_process_scan_lock(conn) -> None:
+    """Release a lock acquired by _try_acquire_cross_process_scan_lock, if any."""
+    if conn is None:
+        return
+    try:
+        conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": _WEATHER_SCAN_LOCK_KEY})
+    except Exception as e:
+        logger.warning(f"Cross-process scan lock: release failed (will clear when connection recycles): {e}")
+    finally:
+        conn.close()
 
 
 def log_event(event_type: str, message: str, data: dict = None):
@@ -67,13 +180,53 @@ def get_recent_events(limit: int = 50) -> List[dict]:
     return event_log[-limit:]
 
 
+def _log_suppressed_signals(reason: str, actionable_signals) -> None:
+    """
+    Surface which actionable signals a circuit breaker is currently blocking.
+
+    Root-caused 2026-08-17: a real tail bet (KXHIGHNY-26AUG18-T92, a genuine
+    2.9-sigma mispricing — exactly the pattern that backtests at ~83%
+    accuracy) sat [ACTIONABLE] for 2+ hours while the daily-loss circuit
+    breaker silently blocked every trade. Nobody knew until the contract
+    had already expired and the miss was found by accident while digging
+    through old signal rows. A blocked scan used to just log "N actionable"
+    as a count — this logs WHAT they were, so a miss like that shows up in
+    the event log the moment it happens instead of hours (or never) later.
+    """
+    if not actionable_signals:
+        return
+    lines = [
+        f"{s.market.market_id} ({s.direction.upper()}, edge={s.edge:+.1%}, conf={s.confidence:.0%})"
+        for s in actionable_signals[:10]
+    ]
+    log_event(
+        "warning",
+        f"{reason} — {len(actionable_signals)} actionable signal(s) NOT traded "
+        f"this cycle: {'; '.join(lines)}",
+        {
+            "reason": reason,
+            "suppressed_count": len(actionable_signals),
+            "suppressed": [
+                {"ticker": s.market.market_id, "direction": s.direction,
+                 "edge": s.edge, "confidence": s.confidence}
+                for s in actionable_signals
+            ],
+        },
+    )
+
+
 async def weather_scan_and_trade_job():
     """
     Background job: Scan weather temperature markets, generate signals, execute trades.
     Runs every WEATHER_SCAN_INTERVAL_SECONDS when WEATHER_ENABLED.
 
     Thin wrapper around _run_weather_scan_and_trade that serialises execution
-    via _scan_lock — see the lock's comment for why that matters here.
+    two ways — see each lock's own comment for what it covers:
+      1. _scan_lock (asyncio.Lock): same-process overlap, e.g. a manual scan
+         firing while the scheduled interval is still mid-flight.
+      2. The cross-process advisory lock: a --reload restart (or any future
+         multi-worker deployment) where a DIFFERENT process is mid-scan —
+         invisible to #1 since each process has its own asyncio.Lock.
     """
     if _scan_lock.locked():
         log_event(
@@ -84,7 +237,19 @@ async def weather_scan_and_trade_job():
         return
 
     async with _scan_lock:
-        await _run_weather_scan_and_trade()
+        conn, acquired = _try_acquire_cross_process_scan_lock()
+        if not acquired:
+            log_event(
+                "warning",
+                "Another process already holds the weather-scan lock (likely an "
+                "overlapping --reload restart) — skipping this invocation to avoid "
+                "placing duplicate live orders for the same signal.",
+            )
+            return
+        try:
+            await _run_weather_scan_and_trade()
+        finally:
+            _release_cross_process_scan_lock(conn)
 
 
 async def _run_weather_scan_and_trade():
@@ -114,6 +279,7 @@ async def _run_weather_scan_and_trade():
 
             if not state.is_running:
                 log_event("info", "Bot is paused, skipping weather trades")
+                _log_suppressed_signals("Bot paused", actionable)
                 return
 
             # Root-caused 2026-08-15: these three were hardcoded locals, so
@@ -126,7 +292,27 @@ async def _run_weather_scan_and_trade():
             # resizing the bankroll is a config change, not a code change.
             MAX_TRADES_PER_SCAN = settings.WEATHER_MAX_TRADES_PER_SCAN
             MIN_TRADE_SIZE = settings.WEATHER_MIN_TRADE_SIZE
-            MAX_WEATHER_ALLOCATION = settings.WEATHER_MAX_ALLOCATION
+
+            # Bounded scale-in — added 2026-08-17 on user request. A flat
+            # one-trade-per-ticket dedup (added 2026-08-14) fixed the
+            # unbounded-retry bug that produced the -$1,133 NY loss cluster,
+            # but it also blocks legitimately adding to a position when NEW
+            # evidence shows up (price moved further our way, model
+            # agreement strengthened) — "still actionable 5 minutes later"
+            # isn't new evidence (the forecast barely changes scan to scan),
+            # so a re-entry only counts as genuine if the edge has actually
+            # GROWN past the last entry into this exact ticket. Bounded to
+            # MAX_SCALE_INS additional adds and a total-exposure cap so a
+            # wrong call can't compound the way the unbounded version did.
+            MAX_SCALE_INS = 2                      # up to 2 adds -> 3 entries total per ticket
+            SCALE_IN_EXPOSURE_CAP_MULTIPLE = 2.0   # total size per ticket <= 2x the first entry
+            MIN_SCALE_IN_EDGE_GROWTH = 0.02        # edge must grow by >=2pp, not just != last entry —
+                                                    # observed 2026-08-18: back-to-back scans with an
+                                                    # unmoved market/forecast reproduce the exact same
+                                                    # edge float, which a bare `>` comparison should
+                                                    # reject but a same-scan-interval duplicate got
+                                                    # through anyway; a real margin is a sturdier bar
+                                                    # than exact inequality regardless of the cause.
 
             # --- Daily loss circuit breaker ---
             today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -137,11 +323,13 @@ async def _run_weather_scan_and_trade():
 
             if daily_pnl <= -settings.DAILY_LOSS_LIMIT:
                 log_event("warning", f"Daily loss limit hit: ${daily_pnl:.2f} (limit: -${settings.DAILY_LOSS_LIMIT:.0f}). Stopping trades.")
+                _log_suppressed_signals("Daily loss limit", actionable)
                 return
 
             total_pending = db.query(Trade).filter(Trade.settled == False).count()
             if total_pending >= settings.MAX_TOTAL_PENDING_TRADES:
                 log_event("info", f"Max pending trades reached ({total_pending}/{settings.MAX_TOTAL_PENDING_TRADES})")
+                _log_suppressed_signals("Max pending trades reached", actionable)
                 return
 
             weather_pending = db.query(func.coalesce(func.sum(Trade.size), 0.0)).filter(
@@ -149,57 +337,122 @@ async def _run_weather_scan_and_trade():
                 Trade.market_type == "weather",
             ).scalar()
 
+            # Root-caused 2026-08-16: this used to be a flat dollar cap
+            # (WEATHER_MAX_ALLOCATION=$500) that made sense at the old $30
+            # live bankroll but silently became a 5% ceiling once bankroll
+            # moved to $10,000 — the bot hit "allocation limit reached" on
+            # every scan for over an hour, blocking real edges for a reason
+            # that had nothing to do with edge quality. Now a percentage of
+            # total capital (free bankroll + already-committed positions),
+            # so it scales automatically with whatever INITIAL_BANKROLL is.
+            total_capital = state.bankroll + weather_pending
+            MAX_WEATHER_ALLOCATION = total_capital * settings.WEATHER_MAX_ALLOCATION_PCT
+
             if weather_pending >= MAX_WEATHER_ALLOCATION:
-                log_event("info", f"Weather allocation limit reached: ${weather_pending:.0f}/${MAX_WEATHER_ALLOCATION:.0f}")
+                log_event("info", f"Weather allocation limit reached: ${weather_pending:.0f}/${MAX_WEATHER_ALLOCATION:.0f} ({settings.WEATHER_MAX_ALLOCATION_PCT:.0%} of ${total_capital:.0f} total capital)")
+                _log_suppressed_signals("Weather allocation limit", actionable)
                 return
 
             trades_executed = 0
             for signal in actionable[:MAX_TRADES_PER_SCAN]:
-                # Guard 1: exact ticker — already have this specific contract.
-                # Guard 2: city/date prefix — already have ANY bracket for this
-                #   city on this date, regardless of strike or direction.
-                #   Prevents capital from being split across correlated brackets
-                #   (e.g. B83.5 and B84.0 for NYC on the same day).
-                from backend.data.kalshi_markets import CITY_SERIES
+                # Guard 1 (exact ticker): may SCALE IN under the bounded
+                #   rules below, instead of an automatic block.
+                # Guard 2 (city/date prefix, different ticker): still a hard
+                #   block, unchanged — prevents capital being split across
+                #   correlated brackets (e.g. B83.5 and B84.0 for NYC same
+                #   day). Scale-in only ever adds to the SAME bracket.
+                # Root-caused 2026-08-23: always used the HIGH series here
+                # regardless of the signal's actual metric — for a low-temp
+                # signal this built a prefix that could never match its own
+                # ticker, silently disabling this guard for every low-temp
+                # trade (it would still pass Guard 1's exact-ticker check,
+                # but never correctly detect a DIFFERENT low-temp bracket on
+                # the same city/day as correlated).
+                from backend.data.kalshi_markets import CITY_SERIES, LOW_SERIES
                 city_key    = signal.market.city_key
                 target_date = signal.market.target_date
-                series      = CITY_SERIES.get(city_key, "")
+                series_map  = LOW_SERIES if signal.market.metric == "low" else CITY_SERIES
+                series      = series_map.get(city_key, "")
                 date_str    = target_date.strftime("%y%b%d").upper()
                 ticker_prefix = f"{series}-{date_str}-"
+                this_ticker = signal.market.market_id
 
                 today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
-                # Block 1: unsettled position — order is currently live on Kalshi.
-                open_position = db.query(Trade).filter(
+                # Block 2: a DIFFERENT bracket for this city/date, either still
+                # open or already filled today. Unchanged from before.
+                other_open = db.query(Trade).filter(
                     Trade.settled == False,
                     Trade.platform == "kalshi",
                     Trade.market_ticker.like(f"{ticker_prefix}%"),
+                    Trade.market_ticker != this_ticker,
                 ).first()
-
-                # Block 2: filled position today — a prior limit order actually executed.
-                # settled=True doesn't mean we should re-enter; it means we already
-                # accumulated real size. Timeouts are excluded (order_status != timed_out/cancelled).
-                filled_position = db.query(Trade).filter(
+                other_filled = db.query(Trade).filter(
                     Trade.platform == "kalshi",
                     Trade.market_ticker.like(f"{ticker_prefix}%"),
+                    Trade.market_ticker != this_ticker,
                     Trade.timestamp >= today_start,
                     Trade.execution_type == "maker_limit",
                     Trade.order_status != "timed_out",
                     Trade.order_status != "cancelled",
                 ).first()
-
-                if open_position or filled_position:
-                    blocking = open_position or filled_position
+                if other_open or other_filled:
+                    blocking = other_open or other_filled
                     log_event(
                         "info",
-                        f"Skipping {signal.market.market_id}: "
-                        f"{'open' if open_position else 'filled'} position already "
-                        f"exists for {city_key}/{target_date} ({blocking.market_ticker})",
+                        f"Skipping {signal.market.market_id}: a different bracket already "
+                        f"held for {city_key}/{target_date} ({blocking.market_ticker})",
                     )
                     continue
 
-                trade_size = min(signal.suggested_size, settings.WEATHER_MAX_TRADE_SIZE)
+                # Guard 1: existing entries into THIS exact ticket — bounded scale-in.
+                same_ticket_trades = (
+                    db.query(Trade)
+                    .filter(Trade.platform == "kalshi", Trade.market_ticker == this_ticker)
+                    .order_by(Trade.timestamp.asc())
+                    .all()
+                )
+
+                remaining_budget = None
+                if same_ticket_trades:
+                    if len(same_ticket_trades) > MAX_SCALE_INS:
+                        log_event(
+                            "info",
+                            f"Skipping {this_ticker}: already at max {MAX_SCALE_INS} scale-ins",
+                        )
+                        continue
+
+                    last_edge = same_ticket_trades[-1].edge_at_entry or 0.0
+                    if abs(signal.edge) < abs(last_edge) + MIN_SCALE_IN_EDGE_GROWTH:
+                        log_event(
+                            "info",
+                            f"Skipping {this_ticker}: edge {abs(signal.edge):.1%} hasn't grown "
+                            f"at least {MIN_SCALE_IN_EDGE_GROWTH:.0%} past last entry's "
+                            f"{abs(last_edge):.1%} — a re-scan agreeing with itself (even one "
+                            f"that recomputes a bit-identical edge) isn't new evidence",
+                        )
+                        continue
+
+                    original_size = same_ticket_trades[0].size
+                    committed_size = sum(t.size for t in same_ticket_trades)
+                    exposure_cap = original_size * SCALE_IN_EXPOSURE_CAP_MULTIPLE
+                    remaining_budget = exposure_cap - committed_size
+                    if remaining_budget < MIN_TRADE_SIZE:
+                        log_event(
+                            "info",
+                            f"Skipping {this_ticker}: at {SCALE_IN_EXPOSURE_CAP_MULTIPLE:.0f}x "
+                            f"exposure cap (${committed_size:.0f}/${exposure_cap:.0f})",
+                        )
+                        continue
+
+                # signal.suggested_size is already Kelly-sized and capped at
+                # KELLY_MAX_TRADE_FRACTION of bankroll — no separate flat
+                # WEATHER_MAX_TRADE_SIZE clamp here (see weather_signals.py).
+                trade_size = signal.suggested_size
+                if remaining_budget is not None:
+                    trade_size = min(trade_size, remaining_budget)
                 trade_size = max(trade_size, MIN_TRADE_SIZE)
+                is_scale_in = bool(same_ticket_trades)
 
                 if state.bankroll < MIN_TRADE_SIZE:
                     log_event("warning", f"Bankroll too low: ${state.bankroll:.2f}")
@@ -223,10 +476,18 @@ async def _run_weather_scan_and_trade():
                 else:
                     trade = await execute_live_trade(signal, trade_size)
                     if trade is None:
+                        # None now covers two distinct cases — a physical
+                        # guardrail rejection (see execute_live_trade's own
+                        # [GUARDRAIL LIVE] log line for that) or a genuine
+                        # Kalshi order-placement failure (its own [ERROR]
+                        # line, 2026-08-20 fix). Either way nothing was
+                        # committed here — no bankroll debit, no phantom
+                        # position — so this is just a skip, not a specific
+                        # diagnosis; check the two log lines above for which.
                         log_event(
                             "warning",
-                            f"Live trade blocked by physical guardrail: "
-                            f"{signal.market.market_id}",
+                            f"Live trade not placed: {signal.market.market_id} "
+                            f"(guardrail rejection or order placement failure — see prior log line)",
                         )
                         continue
 
@@ -256,8 +517,8 @@ async def _run_weather_scan_and_trade():
                 trades_executed += 1
 
                 log_event("trade",
-                    f"WX {signal.market.city_name}: {signal.direction.upper()} "
-                    f"${trade_size:.0f} @ {trade.entry_price:.0%} "
+                    f"WX {'[SCALE-IN] ' if is_scale_in else ''}{signal.market.city_name}: "
+                    f"{signal.direction.upper()} ${trade_size:.0f} @ {trade.entry_price:.0%} "
                     f"({'sim/ask' if sim_mode else 'live/limit'}) | "
                     f"{signal.market.metric} {signal.market.direction} {signal.market.threshold_f:.0f}F",
                     {
@@ -269,6 +530,7 @@ async def _run_weather_scan_and_trade():
                         "execution_type": trade.execution_type,
                         "city": signal.market.city_name,
                         "platform": signal.market.platform,
+                        "scale_in": is_scale_in,
                     }
                 )
 
@@ -333,6 +595,33 @@ async def settlement_job():
     except Exception as e:
         log_event("error", f"Settlement error: {str(e)}")
         logger.exception("Error in settlement_job")
+
+
+async def reconciliation_job():
+    """
+    Background job: verify nws_early-settled trades against Kalshi's
+    official result once it's likely available, correcting the ledger on
+    any mismatch. See settlement.py's reconcile_early_settlements for the
+    full rationale (2026-08-20 audit finding).
+    """
+    try:
+        from backend.core.settlement import reconcile_early_settlements
+
+        db = SessionLocal()
+        try:
+            mismatched = await reconcile_early_settlements(db)
+            if mismatched:
+                log_event(
+                    "error",
+                    f"Reconciliation found {len(mismatched)} early-settlement mismatch(es) — corrected",
+                    {"trade_ids": [t.id for t in mismatched]},
+                )
+        finally:
+            db.close()
+
+    except Exception as e:
+        log_event("error", f"Reconciliation error: {str(e)}")
+        logger.exception("Error in reconciliation_job")
 
 
 async def heartbeat_job():
@@ -583,8 +872,8 @@ async def check_pending_orders_job():
         # Fetch all pending_fill orders (including non-timed-out ones) and
         # cancel any whose bracket has been breached by live surface temperature.
         # This is the automated open-order sweep requested in Guardrail 3.
-        from backend.core.weather_signals import _resolve_city_from_ticker
-        from backend.data.weather import fetch_metar_current
+        from backend.core.weather_signals import _resolve_city_from_ticker, _evaluate_between_bracket_outcome
+        from backend.data.weather import fetch_metar_current, fetch_station_high_water_mark, fetch_station_low_water_mark, CITY_CONFIG
         from datetime import date as _date
 
         all_pending = (
@@ -611,33 +900,100 @@ async def check_pending_orders_job():
             if parsed.get("target_date") != _date.today():
                 continue
 
-            metar = await fetch_metar_current(city_key)
-            if metar is None:
-                continue
-
             threshold = parsed["threshold_f"]
             parsed_direction = parsed["direction"]
+            metric = parsed.get("metric", "high")
+            reason = None
 
-            betting_high_stays_below = (
-                (trade.direction == "yes" and parsed_direction == "below") or
-                (trade.direction == "no"  and parsed_direction == "above")
-            )
-            if not betting_high_stays_below:
-                continue
+            # Root-caused 2026-08-16: the "between" branch below used to not
+            # exist at all — this sweep only ever handled simple above/below
+            # contracts, silently leaving "between"-bracket orders (most of
+            # what actually gets traded) resting regardless of live readings.
+            if parsed_direction == "between":
+                floor_f = parsed.get("floor_f")
+                cap_f = parsed.get("cap_f")
+                if floor_f is None or cap_f is None:
+                    continue
+                # 2026-08-23: metric-aware — see fetch_station_low_water_mark's
+                # docstring; a between-bracket LOW contract needs the day's
+                # LOW so far, not its high.
+                if metric == "low":
+                    observed = await fetch_station_low_water_mark(city_key, parsed["target_date"])
+                else:
+                    observed = await fetch_station_high_water_mark(city_key, parsed["target_date"])
+                if observed is None:
+                    continue
+                bias = CITY_CONFIG.get(city_key, {}).get("station_bias_f", 0.0)
+                corrected = observed + bias
+                outcome = _evaluate_between_bracket_outcome(city_key, floor_f, cap_f, corrected)
+                if outcome is None:
+                    continue
+                our_side_loses = (
+                    (outcome == "yes_wins" and trade.direction == "no") or
+                    (outcome == "no_wins"  and trade.direction == "yes")
+                )
+                if not our_side_loses:
+                    continue
+                reason = (
+                    f"METAR_SWEEP: {city_key} {metric}-water-mark {corrected:.1f}°F "
+                    f"vs band [{floor_f:.1f}, {cap_f:.1f}]°F ({outcome}). "
+                    f"Order rejected: bracket already decided against our {trade.direction} side."
+                )
+            else:
+                metar = await fetch_metar_current(city_key)
+                if metar is None:
+                    continue
 
-            from backend.core.execution import _KILL_SWITCH_BUFFER_F
-            ceiling = threshold
-            current_temp = metar.observed_temp_f
+                from backend.core.execution import _KILL_SWITCH_BUFFER_F
+                current_temp = metar.observed_temp_f
 
-            if current_temp < ceiling - _KILL_SWITCH_BUFFER_F:
-                continue  # bracket not yet breached — leave order resting
+                if metric == "low":
+                    # 2026-08-23: mirror of the high-side kill switch below.
+                    # A single live reading is a valid, time-of-day-independent
+                    # bound on the day's still-to-come extreme either way: the
+                    # day's HIGH can only be >= any reading taken that day, and
+                    # the day's LOW can only be <= any reading taken that day.
+                    # So "already this cold" is just as certain a physical fact
+                    # as "already this hot" — no diurnal-timing model needed
+                    # here (unlike the trend_stop projection in weather_signals.py,
+                    # which genuinely does need one and was deliberately NOT
+                    # extended to lows).
+                    betting_low_stays_above = (
+                        (trade.direction == "yes" and parsed_direction == "above") or
+                        (trade.direction == "no"  and parsed_direction == "below")
+                    )
+                    if not betting_low_stays_above:
+                        continue
 
-            reason = (
-                f"METAR_SWEEP: {metar.station} {current_temp:.1f}°F "
-                f">= ceiling {ceiling:.1f}°F − {_KILL_SWITCH_BUFFER_F}°F. "
-                f"Order rejected: Live ground temperature ({current_temp:.1f}°F) "
-                f"has breached bracket threshold."
-            )
+                    floor = threshold
+                    if current_temp > floor + _KILL_SWITCH_BUFFER_F:
+                        continue  # bracket not yet breached — leave order resting
+
+                    reason = (
+                        f"METAR_SWEEP: {metar.station} {current_temp:.1f}°F "
+                        f"<= floor {floor:.1f}°F + {_KILL_SWITCH_BUFFER_F}°F. "
+                        f"Order rejected: Live ground temperature ({current_temp:.1f}°F) "
+                        f"has already breached bracket floor."
+                    )
+                else:
+                    betting_high_stays_below = (
+                        (trade.direction == "yes" and parsed_direction == "below") or
+                        (trade.direction == "no"  and parsed_direction == "above")
+                    )
+                    if not betting_high_stays_below:
+                        continue
+
+                    ceiling = threshold
+
+                    if current_temp < ceiling - _KILL_SWITCH_BUFFER_F:
+                        continue  # bracket not yet breached — leave order resting
+
+                    reason = (
+                        f"METAR_SWEEP: {metar.station} {current_temp:.1f}°F "
+                        f">= ceiling {ceiling:.1f}°F − {_KILL_SWITCH_BUFFER_F}°F. "
+                        f"Order rejected: Live ground temperature ({current_temp:.1f}°F) "
+                        f"has breached bracket threshold."
+                    )
 
             if client and trade.order_id:
                 try:
@@ -677,33 +1033,73 @@ async def check_pending_orders_job():
         db.close()
 
 
+def _city_key_from_ticker(ticker: str) -> Optional[str]:
+    """
+    Cheap ticker-prefix -> city_key lookup with no API call, for callers
+    that only need the city (e.g. a timezone lookup) and not the
+    authoritative direction/threshold that _resolve_city_from_ticker fetches
+    from Kalshi's market metadata.
+
+    Root-caused 2026-08-23: only checked CITY_SERIES (high-temp) — a
+    low-temp ticker would resolve to None here, silently skipping e.g. the
+    overnight de-risk multiplier for low-temp positions (position_
+    liquidator_job's trailing stop would run at the non-derisked width for
+    them all night, since _is_overnight_derisk(None) is treated as False).
+    """
+    from backend.data.kalshi_markets import CITY_SERIES, LOW_SERIES
+    for city_key, series in {**CITY_SERIES, **LOW_SERIES}.items():
+        if ticker.startswith(f"{series}-"):
+            return city_key
+    return None
+
+
+def _is_overnight_derisk(city_key: str) -> bool:
+    """
+    True once it's late evening in city_key's local time — well past the
+    diurnal peak, with an open position now carrying overnight settlement-
+    reporting-gap risk (see execution.py's _KILL_SWITCH_BUFFER_F docstring)
+    for no further edge. Tightens the trailing-stop thresholds in
+    position_liquidator_job during this window rather than forcing an
+    unconditional exit — a position that's still actionable should still be
+    allowed to run, just with less rope.
+    """
+    from backend.data.weather import CITY_CONFIG
+    tz_str = CITY_CONFIG.get(city_key, {}).get("timezone", "UTC")
+    local_hour = datetime.now(ZoneInfo(tz_str)).hour
+    return local_hour >= OVERNIGHT_DERISK_LOCAL_HOUR
+
+
 async def position_liquidator_job():
     """
-    Query the live Kalshi portfolio, evaluate every open position, and
-    automatically sell when any exit condition is satisfied.
+    Evaluate every open position and automatically sell when any exit
+    condition is satisfied — this IS the "market sentiment" monitor
+    (live price vs entry price), independent of the METAR-driven checks in
+    evaluate_open_positions_for_exit.
 
     Exit conditions (checked in order):
       1. Profit target  — unrealised gain ≥ PROFIT_TARGET_PCT (default 50%).
       2. METAR stop-loss — live surface temperature has physically breached the
          bracket boundary so the position cannot win; cut losses immediately.
       3. Price stop-loss — market price has collapsed ≥ PRICE_STOP_LOSS_PCT
-         (default 80%) below entry, regardless of METAR availability.
+         (default 35%) below entry, regardless of METAR availability.
 
-    The sell order uses post_only=False so it crosses the spread as a taker
-    and is filled immediately at the current best bid price.
-
-    Only runs when SIMULATION_MODE=False — the live Kalshi API is the source
-    of truth for positions.  In simulation mode the DB trade records and the
-    NWS exit job handle position management instead.
+    Root-caused 2026-08-17: this used to hard-return under SIMULATION_MODE,
+    meaning conditions 1 and 3 (the only ones that don't need live METAR)
+    never ran at all in sim mode — the exact "market sentiment" signal the
+    user asked for was built and then never switched on. Now runs in both
+    modes: live mode sources positions from the real Kalshi account and
+    places a real sell order; sim mode sources open positions from our own
+    DB trades (each trade row — including scale-ins, which each have their
+    own entry price — evaluated independently) and simulates the fill at
+    the live order-book bid instead of calling client.sell_position().
     """
     from backend.config import settings
-    if settings.SIMULATION_MODE:
-        return
+    sim_mode = settings.SIMULATION_MODE
 
     from backend.data.kalshi_client import KalshiClient, kalshi_credentials_present
     from backend.data.kalshi_markets import _extract_prices_from_orderbook
-    from backend.core.weather_signals import _resolve_city_from_ticker
-    from backend.data.weather import fetch_metar_current
+    from backend.core.weather_signals import _resolve_city_from_ticker, _evaluate_between_bracket_outcome
+    from backend.data.weather import fetch_metar_current, fetch_station_high_water_mark, fetch_station_low_water_mark, CITY_CONFIG
     from backend.core.execution import _KILL_SWITCH_BUFFER_F
     from datetime import date as _date
 
@@ -711,81 +1107,91 @@ async def position_liquidator_job():
         return
 
     client = KalshiClient()
-
-    # ── 1. Fetch live portfolio positions ─────────────────────────────────────
-    try:
-        positions_resp = await client.get_positions(settlement_status="unsettled")
-    except Exception as e:
-        logger.warning(f"position_liquidator: get_positions failed: {e}")
-        return
-
-    # Tolerate both {"positions": [...]} and {"market_positions": [...]}
-    positions = (
-        positions_resp.get("positions")
-        or positions_resp.get("market_positions")
-        or []
-    )
-    if not positions:
-        return
-
     db = SessionLocal()
     try:
         state = db.query(BotState).first()
         liquidated_count = 0
 
-        for pos in positions:
-            # ── Resolve ticker ───────────────────────────────────────────────
-            ticker = (
-                pos.get("ticker")
-                or pos.get("market_ticker")
-                or pos.get("market_id")
-            )
-            if not ticker:
-                continue
-
-            # Net signed contract count (positive = long YES, negative = long NO).
-            # Handle string fields from the API gracefully.
-            #
-            # Root-caused 2026-08-14: Kalshi's actual response field is
-            # "position_fp" (a fixed-point decimal string, e.g. "-21.00"),
-            # not "position" — that key doesn't exist in the real payload, so
-            # this always read the dict .get() default of 0 and every
-            # position looked flat. This job has likely never sold anything
-            # via profit-target or stop-loss since it was written.
-            try:
-                raw_pos = pos.get("position_fp", pos.get("position", 0))
-                net_position = float(raw_pos) if raw_pos not in (None, "") else 0.0
-            except (ValueError, TypeError):
-                continue
-
-            if net_position == 0:
-                continue
-
-            abs_count = int(round(abs(net_position)))
-            # Derive holding side from DB trade (more reliable than API sign
-            # when the API representation is ambiguous or pre-netted).
-            # Fallback to API sign when no DB record exists.
-            api_holding_side = "yes" if net_position > 0 else "no"
-
-            # ── Match to DB trade ────────────────────────────────────────────
-            trade = (
+        # ── 1. Build the work list: (ticker, trade, live_net_position|None) ────
+        work_items = []
+        if sim_mode:
+            open_trades = (
                 db.query(Trade)
                 .filter(
-                    Trade.market_ticker == ticker,
                     Trade.settled == False,
                     Trade.platform == "kalshi",
+                    Trade.market_type == "weather",
                 )
-                .order_by(Trade.timestamp.desc())
-                .first()
+                .all()
             )
+            for t in open_trades:
+                work_items.append((t.market_ticker, t, None))
+        else:
+            try:
+                positions_resp = await client.get_positions(settlement_status="unsettled")
+            except Exception as e:
+                logger.warning(f"position_liquidator: get_positions failed: {e}")
+                return
+            # Tolerate both {"positions": [...]} and {"market_positions": [...]}
+            positions = (
+                positions_resp.get("positions")
+                or positions_resp.get("market_positions")
+                or []
+            )
+            if not positions:
+                return
 
-            holding_side = trade.direction if trade else api_holding_side
-            if trade is None:
-                logger.debug(
-                    f"position_liquidator: no unsettled DB trade for {ticker} "
-                    f"(may be manually placed) — skipping"
+            for pos in positions:
+                ticker = (
+                    pos.get("ticker")
+                    or pos.get("market_ticker")
+                    or pos.get("market_id")
                 )
-                continue
+                if not ticker:
+                    continue
+
+                # Net signed contract count (positive = long YES, negative = long NO).
+                #
+                # Root-caused 2026-08-14: Kalshi's actual response field is
+                # "position_fp" (a fixed-point decimal string, e.g. "-21.00"),
+                # not "position" — that key doesn't exist in the real payload, so
+                # this always read the dict .get() default of 0 and every
+                # position looked flat. This job has likely never sold anything
+                # via profit-target or stop-loss since it was written.
+                try:
+                    raw_pos = pos.get("position_fp", pos.get("position", 0))
+                    net_position = float(raw_pos) if raw_pos not in (None, "") else 0.0
+                except (ValueError, TypeError):
+                    continue
+                if net_position == 0:
+                    continue
+
+                trade = (
+                    db.query(Trade)
+                    .filter(
+                        Trade.market_ticker == ticker,
+                        Trade.settled == False,
+                        Trade.platform == "kalshi",
+                    )
+                    .order_by(Trade.timestamp.desc())
+                    .first()
+                )
+                if trade is None:
+                    logger.debug(
+                        f"position_liquidator: no unsettled DB trade for {ticker} "
+                        f"(may be manually placed) — skipping"
+                    )
+                    continue
+                work_items.append((ticker, trade, net_position))
+
+        if not work_items:
+            return
+
+        for ticker, trade, net_position in work_items:
+            # Derive holding side from DB trade (more reliable than API sign
+            # when the API representation is ambiguous or pre-netted).
+            # Fallback to API sign when no DB record exists (live mode only).
+            holding_side = trade.direction if trade else ("yes" if (net_position or 0) > 0 else "no")
 
             # ── Get live order book ──────────────────────────────────────────
             try:
@@ -809,19 +1215,69 @@ async def position_liquidator_job():
 
             # ── P&L calculation ──────────────────────────────────────────────
             entry_price_per_contract = trade.entry_price   # e.g., 0.35
-            entry_cost    = entry_price_per_contract * abs_count
+            if sim_mode:
+                # trade.size is DOLLARS committed (see settlement.py's
+                # calculate_pnl fix, 2026-08-17), not a contract count —
+                # contracts = size / entry_price.
+                abs_count = trade.size / entry_price_per_contract if entry_price_per_contract else 0.0
+                entry_cost = trade.size
+            else:
+                abs_count = int(round(abs(net_position)))
+                entry_cost = entry_price_per_contract * abs_count
             sell_proceeds = sell_price * abs_count
             unrealised_pnl = sell_proceeds - entry_cost
             gain_pct = unrealised_pnl / entry_cost if entry_cost > 0 else 0.0
 
-            exit_reason: Optional[str] = None
+            # Trailing-stop peak tracking — persisted every cycle regardless
+            # of whether an exit fires this pass (see the always-commit note
+            # at the end of this function), so a retracement from peak can
+            # still be detected on a LATER cycle even when this one is a
+            # no-op otherwise.
+            trade.peak_gain_pct = max(trade.peak_gain_pct or gain_pct, gain_pct)
 
-            # ── Exit condition 1: profit target ──────────────────────────────
-            if gain_pct >= PROFIT_TARGET_PCT:
+            exit_reason: Optional[str] = None
+            price_stop_loss_pct = settings.WEATHER_PRICE_STOP_LOSS_PCT
+
+            # ── Exit condition 1: trailing profit stop ────────────────────────
+            #
+            # Root-caused 2026-08-17: a flat profit target sold the instant
+            # gain_pct crossed WEATHER_PROFIT_TARGET_PCT (50%), regardless of
+            # entry price. On a 3c tail-bet entry, +50% is still just 4.5c —
+            # nowhere near "this is basically decided" — yet a real position
+            # (KXHIGHMIA-26AUG18-B93.5, two $100 entries at 3c) was sold the
+            # moment it hit 5c for a ~$67 gain, when holding to a winning
+            # settlement would have paid ~$3,233. WEATHER_PROFIT_TARGET_PCT
+            # is now the ACTIVATION threshold for a trailing stop instead of
+            # an immediate sell: once gain has ever reached that level, exit
+            # only once it has since retraced off its peak by the amount
+            # _trailing_stop_giveback() computes (2026-08-21: now scales with
+            # peak size instead of a flat percentage — see its own docstring
+            # and WEATHER_TRAILING_STOP_RATIO in config.py) — letting a
+            # genuine tail-bet winner keep running while still protecting
+            # the gain already banked if it reverses.
+            #
+            # Both thresholds tighten in the overnight de-risk window (see
+            # _is_overnight_derisk): less room to run once the diurnal peak
+            # is long past and the position would otherwise carry overnight
+            # settlement-reporting-gap risk for a smaller marginal edge.
+            city_key_hint = _city_key_from_ticker(ticker)
+            derisk = _is_overnight_derisk(city_key_hint) if city_key_hint else False
+            activation_pct = settings.WEATHER_PROFIT_TARGET_PCT * (OVERNIGHT_ACTIVATION_MULTIPLIER if derisk else 1.0)
+            trail_pct      = _trailing_stop_giveback(trade.peak_gain_pct or 0.0) * (OVERNIGHT_TRAIL_MULTIPLIER if derisk else 1.0)
+
+            # Gated behind WEATHER_EARLY_EXITS_ENABLED (see its docstring in
+            # config.py) — peak tracking above still runs unconditionally so
+            # the trail stays accurate for whenever this is switched back on.
+            if (
+                settings.WEATHER_EARLY_EXITS_ENABLED
+                and trade.peak_gain_pct >= activation_pct
+                and gain_pct <= trade.peak_gain_pct - trail_pct
+            ):
                 exit_reason = (
-                    f"PROFIT_TARGET: {gain_pct:+.0%} gain "
-                    f"(entry {entry_price_per_contract:.2f}, "
-                    f"current {sell_price:.2f}, target ≥ {PROFIT_TARGET_PCT:.0%})"
+                    f"TRAILING_STOP{' [EVENING]' if derisk else ''}: {gain_pct:+.0%} gain, "
+                    f"down from peak {trade.peak_gain_pct:+.0%} "
+                    f"(entry {entry_price_per_contract:.2f}, current {sell_price:.2f}, "
+                    f"activation ≥{activation_pct:.0%}, trail {trail_pct:.0%})"
                 )
 
             # ── Exit condition 2: METAR physical invalidation ────────────────
@@ -832,57 +1288,120 @@ async def position_liquidator_job():
                     target_date = parsed.get("target_date")
 
                     if target_date == _date.today():
-                        try:
-                            metar = await fetch_metar_current(city_key)
-                        except Exception:
-                            metar = None
+                        parsed_dir = parsed["direction"]
+                        metric = parsed.get("metric", "high")
 
-                        if metar is not None:
-                            current_temp   = metar.observed_temp_f
-                            threshold      = parsed["threshold_f"]
-                            parsed_dir     = parsed["direction"]
-
-                            # The position loses if the daily high crosses the
-                            # bracket ceiling (same logic as the entry kill switch).
-                            betting_stays_below = (
-                                (trade.direction == "yes" and parsed_dir == "below") or
-                                (trade.direction == "no"  and parsed_dir == "above")
-                            )
-                            if betting_stays_below:
-                                ceiling = threshold
-                                if current_temp >= ceiling - _KILL_SWITCH_BUFFER_F:
-                                    exit_reason = (
-                                        f"METAR_STOP_LOSS: {metar.station} "
-                                        f"{current_temp:.1f}°F >= ceiling "
-                                        f"{ceiling:.1f}°F − {_KILL_SWITCH_BUFFER_F}°F. "
-                                        f"Order rejected: Live ground temperature "
-                                        f"({current_temp:.1f}°F) has breached bracket threshold."
+                        # Root-caused 2026-08-16: this only ever handled
+                        # simple above/below contracts and silently skipped
+                        # "between" brackets — most of what actually gets
+                        # traded — leaving them with no physical stop-loss
+                        # at all. Shares _evaluate_between_bracket_outcome
+                        # with the pending-order sweep and the NWS exit job.
+                        if parsed_dir == "between":
+                            floor_f = parsed.get("floor_f")
+                            cap_f = parsed.get("cap_f")
+                            if floor_f is not None and cap_f is not None:
+                                # 2026-08-23: metric-aware, mirroring the
+                                # pending-order METAR sweep's same fix.
+                                if metric == "low":
+                                    observed = await fetch_station_low_water_mark(city_key, target_date)
+                                else:
+                                    observed = await fetch_station_high_water_mark(city_key, target_date)
+                                if observed is not None:
+                                    bias = CITY_CONFIG.get(city_key, {}).get("station_bias_f", 0.0)
+                                    corrected = observed + bias
+                                    outcome = _evaluate_between_bracket_outcome(city_key, floor_f, cap_f, corrected)
+                                    our_side_loses = outcome is not None and (
+                                        (outcome == "yes_wins" and trade.direction == "no") or
+                                        (outcome == "no_wins"  and trade.direction == "yes")
                                     )
+                                    if our_side_loses:
+                                        exit_reason = (
+                                            f"METAR_STOP_LOSS: {city_key} {metric}-water-mark "
+                                            f"{corrected:.1f}°F vs band [{floor_f:.1f}, {cap_f:.1f}]°F "
+                                            f"({outcome}). Position already decided against our "
+                                            f"{trade.direction} side."
+                                        )
+                        else:
+                            try:
+                                metar = await fetch_metar_current(city_key)
+                            except Exception:
+                                metar = None
+
+                            if metar is not None:
+                                current_temp = metar.observed_temp_f
+                                threshold    = parsed["threshold_f"]
+
+                                if metric == "low":
+                                    # 2026-08-23: mirror of the high-side check
+                                    # below — see the pending-order METAR
+                                    # sweep's identical fix for the physical
+                                    # reasoning (a single live reading is a
+                                    # valid bound on the day's still-to-come
+                                    # low regardless of time of day).
+                                    betting_stays_above = (
+                                        (trade.direction == "yes" and parsed_dir == "above") or
+                                        (trade.direction == "no"  and parsed_dir == "below")
+                                    )
+                                    if betting_stays_above:
+                                        floor = threshold
+                                        if current_temp <= floor + _KILL_SWITCH_BUFFER_F:
+                                            exit_reason = (
+                                                f"METAR_STOP_LOSS: {metar.station} "
+                                                f"{current_temp:.1f}°F <= floor "
+                                                f"{floor:.1f}°F + {_KILL_SWITCH_BUFFER_F}°F. "
+                                                f"Live ground temperature ({current_temp:.1f}°F) "
+                                                f"has already breached bracket floor."
+                                            )
+                                else:
+                                    # The position loses if the daily high crosses the
+                                    # bracket ceiling (same logic as the entry kill switch).
+                                    betting_stays_below = (
+                                        (trade.direction == "yes" and parsed_dir == "below") or
+                                        (trade.direction == "no"  and parsed_dir == "above")
+                                    )
+                                    if betting_stays_below:
+                                        ceiling = threshold
+                                        if current_temp >= ceiling - _KILL_SWITCH_BUFFER_F:
+                                            exit_reason = (
+                                                f"METAR_STOP_LOSS: {metar.station} "
+                                                f"{current_temp:.1f}°F >= ceiling "
+                                                f"{ceiling:.1f}°F − {_KILL_SWITCH_BUFFER_F}°F. "
+                                                f"Order rejected: Live ground temperature "
+                                                f"({current_temp:.1f}°F) has breached bracket threshold."
+                                            )
 
             # ── Exit condition 3: price stop-loss ────────────────────────────
-            if exit_reason is None and gain_pct <= -PRICE_STOP_LOSS_PCT:
+            # Also gated behind WEATHER_EARLY_EXITS_ENABLED — see condition 1's
+            # comment above. Condition 2 (METAR physical invalidation, above)
+            # stays unconditional regardless of this flag: it only fires once
+            # the outcome is already physically locked in, not a guess.
+            if settings.WEATHER_EARLY_EXITS_ENABLED and exit_reason is None and gain_pct <= -price_stop_loss_pct:
                 exit_reason = (
                     f"PRICE_STOP_LOSS: {gain_pct:+.0%} loss "
                     f"(entry {entry_price_per_contract:.2f}, "
-                    f"current {sell_price:.2f}, floor −{PRICE_STOP_LOSS_PCT:.0%})"
+                    f"current {sell_price:.2f}, floor −{price_stop_loss_pct:.0%})"
                 )
 
             if exit_reason is None:
                 continue
 
-            # ── Execute the liquidation sell order ───────────────────────────
+            # ── Execute the liquidation (real sell in live mode, simulated
+            #    fill at the live bid in sim mode) ────────────────────────────
             try:
-                sell_resp = await client.sell_position(
-                    ticker, abs_count, holding_side, sell_price
-                )
-                sell_order = sell_resp.get("order", {})
-                sell_order_id = sell_order.get("order_id")
+                sell_order_id = None
+                if not sim_mode:
+                    sell_resp = await client.sell_position(
+                        ticker, abs_count, holding_side, sell_price
+                    )
+                    sell_order = sell_resp.get("order", {})
+                    sell_order_id = sell_order.get("order_id")
 
                 # Mark the DB trade as settled via liquidation
                 trade.settled = True
                 trade.settlement_time = datetime.utcnow()
                 trade.settlement_value = sell_price  # exit price per contract
-                trade.pnl = unrealised_pnl
+                trade.pnl = round(unrealised_pnl, 2)
                 trade.result = "win" if unrealised_pnl > 0 else "loss"
                 trade.order_status = "filled"
                 trade.execution_type = "liquidated"
@@ -897,19 +1416,20 @@ async def position_liquidator_job():
                 liquidated_count += 1
                 log_event(
                     "trade" if unrealised_pnl >= 0 else "warning",
-                    f"AUTO-LIQUIDATE {ticker}: "
-                    f"{abs_count} {holding_side.upper()} @ {sell_price:.2f} | "
+                    f"AUTO-LIQUIDATE{' [SIM]' if sim_mode else ''} {ticker}: "
+                    f"{abs_count:.2f} {holding_side.upper()} @ {sell_price:.2f} | "
                     f"pnl {unrealised_pnl:+.2f} | {exit_reason}",
                     {
                         "ticker":        ticker,
                         "holding_side":  holding_side,
-                        "count":         abs_count,
+                        "count":         round(abs_count, 2),
                         "sell_price":    round(sell_price, 4),
                         "entry_price":   round(entry_price_per_contract, 4),
                         "unrealised_pnl": round(unrealised_pnl, 4),
                         "gain_pct":      round(gain_pct, 4),
                         "exit_reason":   exit_reason,
                         "sell_order_id": sell_order_id,
+                        "simulated":     sim_mode,
                     },
                 )
 
@@ -923,8 +1443,12 @@ async def position_liquidator_job():
                     {"ticker": ticker, "error": str(e)},
                 )
 
+        # Always commit — even when nothing was liquidated this cycle, the
+        # trailing-stop peak_gain_pct tracking above still needs to persist,
+        # otherwise "peak" would reset to the current price every cycle and
+        # a retracement from an earlier peak could never be detected.
+        db.commit()
         if liquidated_count > 0:
-            db.commit()
             log_event(
                 "success",
                 f"Position liquidator: closed {liquidated_count} position(s)",
@@ -938,10 +1462,20 @@ async def position_liquidator_job():
 
 
 async def nws_observation_and_exit_job():
-    """Early-settle Kalshi weather positions whose NWS outcome is already confirmed."""
+    """
+    Early-close Kalshi weather positions via two independent triggers:
+      - "settlement": NWS outcome is already DECIDED — force-settle at 1.0/0.0.
+      - "trend_stop" (added 2026-08-17): outcome NOT yet decided, but the live
+        METAR warming trend now projects a breach by the diurnal peak. This is
+        a projection, not a certainty, so it sells at the live market price
+        (a real stop-loss/take-profit) instead of force-settling as a win/loss
+        — see evaluate_open_positions_for_exit's docstring for the rationale
+        (this replaces what used to be a same-day entry time-gate).
+    """
     from backend.core.weather_signals import evaluate_open_positions_for_exit
     from backend.core.settlement import calculate_pnl, update_bot_state_with_settlements
     from backend.data.kalshi_client import KalshiClient, kalshi_credentials_present
+    from backend.data.kalshi_markets import _extract_prices_from_orderbook
 
     db = SessionLocal()
     try:
@@ -956,6 +1490,41 @@ async def nws_observation_and_exit_job():
             if not trade or trade.settled:
                 continue
 
+            if rec["exit_type"] == "trend_stop":
+                # Sell at the live market price — this is a stop-loss on a
+                # projection, not a real settlement, so no settlement_value.
+                try:
+                    ob_data = await client.get_orderbook(trade.market_ticker)
+                    prices, _ = _extract_prices_from_orderbook(ob_data)
+                except Exception as e:
+                    logger.warning(f"trend_stop: orderbook fetch failed for {trade.market_ticker}: {e}")
+                    continue
+                if prices is None:
+                    continue
+
+                sell_price = prices["yes_bid"] if trade.direction == "yes" else prices["no_bid"]
+                contracts = trade.size / trade.entry_price if trade.entry_price else 0.0
+                sell_proceeds = contracts * sell_price
+                pnl = sell_proceeds - trade.size
+
+                trade.settled = True
+                trade.settlement_time = datetime.utcnow()
+                trade.settlement_value = sell_price  # exit price, not a 1.0/0.0 outcome
+                trade.pnl = round(pnl, 2)
+                trade.result = "win" if pnl > 0 else ("loss" if pnl < 0 else "push")
+                trade.execution_type = "liquidated"
+                # A real sale at the live bid, not a projection — nothing to
+                # reconcile later, unlike the nws_early branch below.
+                trade.settlement_source = "trend_stop"
+
+                newly_settled.append(trade)
+                log_event(
+                    "trade",
+                    f"Trend-stop exit: {trade.market_ticker} → sold @ {sell_price:.2f} "
+                    f"| {rec['reason']} | pnl={pnl:+.2f}",
+                )
+                continue
+
             settlement_value = 1.0 if rec["outcome"] == "yes_wins" else 0.0
             pnl = calculate_pnl(trade, settlement_value)
 
@@ -964,6 +1533,11 @@ async def nws_observation_and_exit_job():
             trade.settlement_value = settlement_value
             trade.pnl = pnl
             trade.result = "win" if pnl > 0 else ("loss" if pnl < 0 else "push")
+            # A projection off a live NWS reading crossing EXIT_BUFFER_F, not
+            # Kalshi's own official result — reconcile_early_settlements()
+            # (settlement.py) verifies this against the real outcome once
+            # it's available and corrects the ledger if they disagree.
+            trade.settlement_source = "nws_early"
 
             if trade.signal_id:
                 sig = db.query(Signal).filter(Signal.id == trade.signal_id).first()
@@ -982,7 +1556,7 @@ async def nws_observation_and_exit_job():
             )
 
         await update_bot_state_with_settlements(db, newly_settled)
-        log_event("info", f"NWS exit check: {len(newly_settled)} early settlement(s)")
+        log_event("info", f"NWS exit check: {len(newly_settled)} early exit(s)")
 
     except Exception as e:
         logger.error(f"nws_observation_and_exit_job error: {e}")
@@ -1030,6 +1604,14 @@ def start_scheduler():
         id="heartbeat",
         replace_existing=True,
         max_instances=1
+    )
+
+    scheduler.add_job(
+        reconciliation_job,
+        IntervalTrigger(hours=1),
+        id="reconciliation_check",
+        replace_existing=True,
+        max_instances=1,
     )
 
     scheduler.add_job(

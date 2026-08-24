@@ -2,7 +2,7 @@
 import httpx
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 from sqlalchemy.orm import Session
 
@@ -115,9 +115,30 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
 
 def calculate_pnl(trade: Trade, settlement_value: float) -> float:
     """
-    Calculate P&L for a trade given the settlement value.
+    Calculate net P&L for a trade given the settlement value.
 
     settlement_value: 1.0 if Yes outcome, 0.0 if No outcome
+
+    Root-caused 2026-08-17: trade.size is the DOLLAR amount committed at
+    entry (see execute_paper_trade/execute_live_trade docstrings — "Dollar
+    amount to commit" — and the live-fill path, which stores actual
+    maker/taker_fill_cost_dollars into it). The scheduler debits that full
+    dollar amount from bankroll immediately at entry
+    (`state.bankroll -= trade_size`).
+    This function previously treated trade.size as a CONTRACT COUNT instead
+    (cost = size * entry_price), which silently threw away most of every
+    stake: a losing trade was double-charged (full stake gone at entry,
+    then an extra size*entry_price debited again here) and — worse — a
+    WINNING trade still came out net negative, because the entry debit
+    removed the whole stake but this formula only ever credited back a
+    small fraction of it. Confirmed live: $553 of a $10,000 sim bankroll
+    had already leaked out of just 7 trades before this fix.
+    Correct formula, given size = dollars staked buying (size / entry_price)
+    contracts at $1 payout each: win → net profit = size*(1-price)/price;
+    loss → net loss = -size (the whole stake, already reflected by the
+    entry-time debit — see update_bot_state_with_settlements for how the
+    stake is added back before this net pnl is applied, avoiding a double
+    subtraction).
     """
     direction = trade.direction
     if direction == "up":
@@ -125,16 +146,13 @@ def calculate_pnl(trade: Trade, settlement_value: float) -> float:
     elif direction == "down":
         direction = "no"
 
-    if direction == "yes":
-        if settlement_value == 1.0:
-            pnl = trade.size * (1.0 - trade.entry_price)
-        else:
-            pnl = -trade.size * trade.entry_price
+    won = (direction == "yes" and settlement_value == 1.0) or \
+          (direction == "no" and settlement_value == 0.0)
+
+    if won:
+        pnl = trade.size * (1.0 - trade.entry_price) / trade.entry_price
     else:
-        if settlement_value == 0.0:
-            pnl = trade.size * (1.0 - trade.entry_price)
-        else:
-            pnl = -trade.size * trade.entry_price
+        pnl = -trade.size
 
     return round(pnl, 2)
 
@@ -213,6 +231,9 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
                 trade.settlement_value = settlement_value
                 trade.pnl = pnl
                 trade.settlement_time = datetime.utcnow()
+                # This IS the official Kalshi/Polymarket resolution — ground
+                # truth, never needs reconciling against itself.
+                trade.settlement_source = "official"
 
                 if pnl is not None and pnl > 0:
                     trade.result = "win"
@@ -249,6 +270,141 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
     return settled_trades
 
 
+# How long to wait after an nws_early settlement before checking it against
+# the official result — Kalshi weather markets settle off the next-morning
+# NWS climate report, so anything younger than this would almost always
+# just come back "not resolved yet" and waste an API call.
+RECONCILE_MIN_AGE_HOURS = 12.0
+
+
+async def reconcile_early_settlements(db: Session) -> List[Trade]:
+    """
+    Verify every nws_early-settled trade old enough to likely have an
+    official Kalshi result by now, and correct the ledger if the early
+    projection disagreed with it.
+
+    Added 2026-08-20 (see execution.py's phantom-fill fix from the same
+    audit): the NWS early-exit path (weather_signals.py's "settlement"
+    exit_type, EXIT_BUFFER_F=2.0°F) force-settles a trade off a live
+    observation before Kalshi has officially resolved the market, and
+    nothing previously ever checked that call against the real outcome —
+    once settled=True, settle_pending_trades()'s official-resolution path
+    (filtered to settled==False) would never look at it again. If the 2°F
+    buffer was ever insufficient, the recorded P&L would be silently wrong
+    forever. This closes that gap: mismatches get their pnl/result/bankroll
+    corrected to match the true outcome, not just flagged.
+
+    Returns the list of trades that were found to be MISMATCHED and
+    corrected (empty list = everything checked either matched or isn't
+    resolved yet).
+    """
+    cutoff = datetime.utcnow() - timedelta(hours=RECONCILE_MIN_AGE_HOURS)
+    try:
+        candidates = (
+            db.query(Trade)
+            .filter(
+                Trade.settlement_source == "nws_early",
+                Trade.reconciled_at.is_(None),
+                Trade.settlement_time.isnot(None),
+                Trade.settlement_time <= cutoff,
+            )
+            .all()
+        )
+    except Exception as e:
+        logger.error(f"Failed to query trades pending reconciliation: {e}")
+        return []
+
+    if not candidates:
+        return []
+
+    logger.info(f"Reconciling {len(candidates)} early-settled trade(s) against official results...")
+    mismatched: List[Trade] = []
+
+    for trade in candidates:
+        try:
+            is_resolved, official_value = await check_weather_settlement_source(trade)
+        except Exception as e:
+            logger.error(f"Reconciliation check failed for trade {trade.id}: {e}")
+            continue
+
+        if not is_resolved or official_value is None:
+            # Not officially resolved yet — leave reconciled_at unset and
+            # try again on the next pass.
+            continue
+
+        if official_value == trade.settlement_value:
+            trade.reconciled_at = datetime.utcnow()
+            trade.reconciliation_mismatch = False
+            continue
+
+        # Mismatch — the early NWS call got it wrong. Correct pnl/result and
+        # apply the delta to bankroll/total_pnl (the entry stake was already
+        # debited once at entry time; only the payout difference matters —
+        # same principle as update_bot_state_with_settlements).
+        old_pnl = trade.pnl or 0.0
+        old_result = trade.result
+        correct_pnl = calculate_pnl(trade, official_value)
+        delta = correct_pnl - old_pnl
+
+        trade.settlement_value = official_value
+        trade.pnl = correct_pnl
+        trade.result = "win" if correct_pnl > 0 else ("loss" if correct_pnl < 0 else "push")
+        trade.reconciled_at = datetime.utcnow()
+        trade.reconciliation_mismatch = True
+
+        if trade.signal_id:
+            linked_signal = db.query(Signal).filter(Signal.id == trade.signal_id).first()
+            if linked_signal:
+                actual_outcome = "yes" if official_value == 1.0 else "no"
+                linked_signal.actual_outcome = actual_outcome
+                linked_signal.outcome_correct = (linked_signal.direction == actual_outcome)
+                linked_signal.settlement_value = official_value
+
+        state = db.query(BotState).first()
+        if state:
+            state.total_pnl += delta
+            state.bankroll += delta
+            if old_result == "win" and trade.result != "win":
+                state.winning_trades -= 1
+            elif old_result != "win" and trade.result == "win":
+                state.winning_trades += 1
+
+        logger.error(
+            f"[RECONCILIATION MISMATCH] Trade {trade.id} ({trade.market_ticker}): "
+            f"nws_early called it {old_result} (pnl={old_pnl:+.2f}) but the official "
+            f"result was {'YES' if official_value == 1.0 else 'NO'} — corrected to "
+            f"{trade.result} (pnl={correct_pnl:+.2f}, delta={delta:+.2f})"
+        )
+        mismatched.append(trade)
+
+    try:
+        db.commit()
+    except Exception as e:
+        logger.error(f"Failed to commit reconciliation results: {e}")
+        db.rollback()
+        return []
+
+    if mismatched:
+        logger.error(f"Reconciliation found {len(mismatched)} mismatch(es) — see above for details")
+    else:
+        logger.info(f"Reconciliation: {len(candidates)} checked, all matched or still pending")
+
+    return mismatched
+
+
+async def check_weather_settlement_source(trade: Trade) -> Tuple[bool, Optional[float]]:
+    """
+    Fetch the OFFICIAL resolution only (no pnl computed) — used by
+    reconcile_early_settlements to check a trade that's already settled
+    against the true outcome, as opposed to check_weather_settlement's
+    settle-a-still-pending-trade use.
+    """
+    platform = getattr(trade, 'platform', 'polymarket') or 'polymarket'
+    if platform == "kalshi":
+        return await _fetch_kalshi_resolution(trade.market_ticker)
+    return await fetch_polymarket_resolution(trade.market_ticker, event_slug=trade.event_slug)
+
+
 async def update_bot_state_with_settlements(db: Session, settled_trades: List[Trade]) -> None:
     """Update bot state with P&L from settled trades."""
     if not settled_trades:
@@ -263,7 +419,15 @@ async def update_bot_state_with_settlements(db: Session, settled_trades: List[Tr
         for trade in settled_trades:
             if trade.pnl is not None:
                 state.total_pnl += trade.pnl
-                state.bankroll += trade.pnl
+                # The stake (trade.size) was already fully debited from
+                # bankroll at entry (scheduler.py: state.bankroll -=
+                # trade_size). trade.pnl is the NET change (see
+                # calculate_pnl), so crediting it back alone would still be
+                # missing the returned stake on a win and would double-
+                # subtract it on a loss. Adding size + pnl back returns
+                # exactly the settlement payout: size/entry_price on a win,
+                # 0 on a loss. Root-caused alongside calculate_pnl, 2026-08-17.
+                state.bankroll += trade.size + trade.pnl
                 if trade.result == "win":
                     state.winning_trades += 1
 

@@ -53,5 +53,16 @@ def calculate_kelly_size(
     kelly = max(kelly, 0)
 
     size = kelly * bankroll
-    size = min(size, settings.MAX_TRADE_SIZE)
-    return size
+
+    # Liquidity cap — added 2026-08-20, deliberately different from the
+    # MAX_TRADE_SIZE flat-dollar clamp removed from here the same day. That
+    # one was stale bankroll-era arithmetic sitting UNDER
+    # KELLY_MAX_TRADE_FRACTION and collapsing every trade to the same size
+    # regardless of edge. This one is a real, separate constraint that
+    # KELLY_MAX_TRADE_FRACTION alone can't express: a % of bankroll grows
+    # without bound as bankroll compounds, but actual Kalshi weather-market
+    # order-book depth does not — a Monte Carlo simulation that day showed
+    # pure-% Kelly sizing compounding to sizes no real thin weather contract
+    # could fill. See WEATHER_LIQUIDITY_CAP's own comment in config.py for
+    # the depth data behind the $200 figure.
+    return min(size, settings.WEATHER_LIQUIDITY_CAP)
