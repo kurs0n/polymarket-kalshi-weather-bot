@@ -8,9 +8,24 @@ from backend.config import settings
 from backend.core.sizing import calculate_edge, calculate_kelly_size
 from backend.data.weather import fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG
 from backend.data.weather_markets import WeatherMarket, fetch_polymarket_weather_markets
-from backend.models.database import SessionLocal, Signal
+from backend.models.database import BotState, SessionLocal, Signal
 
 logger = logging.getLogger("trading_bot")
+
+
+def _get_current_bankroll() -> float:
+    """Read the latest bankroll so Kelly sizing reflects settled P&L."""
+    db = SessionLocal()
+    try:
+        state = db.query(BotState).first()
+        if state and state.bankroll is not None:
+            return max(float(state.bankroll), 0.0)
+    except Exception as e:
+        logger.warning(f"Failed to read current bankroll for sizing: {e}")
+    finally:
+        db.close()
+
+    return settings.INITIAL_BANKROLL
 
 
 @dataclass
@@ -95,7 +110,7 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
     confidence = min(0.9, agreement_frac)
 
     # Kelly sizing
-    bankroll = settings.INITIAL_BANKROLL
+    bankroll = _get_current_bankroll()
     suggested_size = calculate_kelly_size(
         edge=abs(edge),
         probability=model_yes_prob,
