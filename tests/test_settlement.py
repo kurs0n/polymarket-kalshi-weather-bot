@@ -25,14 +25,18 @@ class SettlementTests(unittest.TestCase):
             (False, None),
         )
 
-    def test_calculate_pnl_supports_yes_no_and_up_down_directions(self):
+    def test_calculate_pnl_supports_canonical_yes_no_directions(self):
         winning_yes = Trade(direction="yes", entry_price=0.40, size=25)
         losing_no = Trade(direction="no", entry_price=0.40, size=25)
-        winning_up = Trade(direction="up", entry_price=0.40, size=25)
 
         self.assertEqual(calculate_pnl(winning_yes, 1.0), 15.0)
         self.assertEqual(calculate_pnl(losing_no, 1.0), -10.0)
-        self.assertEqual(calculate_pnl(winning_up, 1.0), 15.0)
+
+    def test_calculate_pnl_rejects_legacy_direction_values(self):
+        legacy_trade = Trade(direction="up", entry_price=0.40, size=25)
+
+        with self.assertRaises(ValueError):
+            calculate_pnl(legacy_trade, 1.0)
 
 
 if __name__ == "__main__":

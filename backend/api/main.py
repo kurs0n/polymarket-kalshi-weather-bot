@@ -12,6 +12,7 @@ from backend.models.database import (
     get_db, init_db, SessionLocal,
     Signal, Trade, BotState, AILog
 )
+from backend.models.outcomes import Outcome
 
 from pydantic import BaseModel
 
@@ -313,14 +314,14 @@ async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
     if not state:
         raise HTTPException(status_code=500, detail="Bot state not initialized")
 
-    entry_price = signal.market.yes_price if signal.direction == "yes" else signal.market.no_price
+    entry_price = signal.market.yes_price if signal.direction == Outcome.YES else signal.market.no_price
 
     trade = Trade(
         market_ticker=signal.market.market_id,
         platform=signal.market.platform,
         event_slug=signal.market.slug,
         market_type="weather",
-        direction=signal.direction,
+        direction=signal.direction.value,
         entry_price=entry_price,
         size=min(signal.suggested_size, state.bankroll * 0.05, settings.WEATHER_MAX_TRADE_SIZE),
         model_probability=signal.model_probability,
@@ -492,7 +493,7 @@ async def get_weather_forecasts():
     try:
         from backend.data.weather import fetch_ensemble_forecast, CITY_CONFIG
 
-        city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
+        city_keys = settings.weather_city_list
         forecasts = []
 
         for city_key in city_keys:
@@ -526,7 +527,7 @@ async def get_weather_markets():
     try:
         from backend.data.weather_markets import fetch_polymarket_weather_markets
 
-        city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
+        city_keys = settings.weather_city_list
         markets = await fetch_polymarket_weather_markets(city_keys)
 
         if settings.KALSHI_ENABLED:
@@ -584,7 +585,7 @@ def _weather_signal_to_response(s) -> WeatherSignalResponse:
         target_date=s.market.target_date.isoformat(),
         threshold_f=s.market.threshold_f,
         metric=s.market.metric,
-        direction=s.direction,
+        direction=s.direction.value,
         model_probability=s.model_probability,
         market_probability=s.market_probability,
         edge=s.edge,
@@ -721,7 +722,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             wx_signals = await scan_for_weather_signals()
             weather_signals_data = [_weather_signal_to_response(s) for s in wx_signals]
 
-            city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
+            city_keys = settings.weather_city_list
             for city_key in city_keys:
                 if city_key not in CITY_CONFIG:
                     continue

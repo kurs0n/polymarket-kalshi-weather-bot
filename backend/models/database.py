@@ -27,7 +27,7 @@ class Trade(Base):
     market_type = Column(String, default="weather", index=True)
 
     # Trade details
-    direction = Column(String)  # "yes" or "no"
+    direction = Column(String)  # Canonical outcome: "yes" or "no"
     entry_price = Column(Float)
     size = Column(Float)
     timestamp = Column(DateTime, default=datetime.utcnow)

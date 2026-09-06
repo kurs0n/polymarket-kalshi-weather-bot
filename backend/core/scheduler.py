@@ -9,6 +9,7 @@ import logging
 
 from backend.config import settings
 from backend.models.database import SessionLocal, Trade, BotState, Signal
+from backend.models.outcomes import Outcome
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("trading_bot")
@@ -133,14 +134,14 @@ async def weather_scan_and_trade_job():
                 if trades_executed >= MAX_TRADES_PER_SCAN:
                     break
 
-                entry_price = signal.market.yes_price if signal.direction == "yes" else signal.market.no_price
+                entry_price = signal.market.yes_price if signal.direction == Outcome.YES else signal.market.no_price
 
                 trade = Trade(
                     market_ticker=signal.market.market_id,
                     platform=signal.market.platform,
                     event_slug=signal.market.slug,
                     market_type="weather",
-                    direction=signal.direction,
+                    direction=signal.direction.value,
                     entry_price=entry_price,
                     size=trade_size,
                     model_probability=signal.model_probability,

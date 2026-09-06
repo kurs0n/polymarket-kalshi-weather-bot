@@ -112,7 +112,7 @@ export function TradesTable({ trades }: Props) {
           {sortedTrades.map((trade, i) => {
             const isPending = trade.result === 'pending'
             const isWin = trade.result === 'win'
-            const isYes = trade.direction === 'yes' || trade.direction === 'up'
+            const isYes = trade.direction === 'yes'
             const style = platformStyles[trade.platform?.toLowerCase()]
 
             return (

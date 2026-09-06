@@ -9,6 +9,7 @@ from backend.core.sizing import calculate_edge, calculate_kelly_size
 from backend.data.weather import fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG
 from backend.data.weather_markets import WeatherMarket, fetch_polymarket_weather_markets
 from backend.models.database import BotState, SessionLocal, Signal
+from backend.models.outcomes import Outcome
 
 logger = logging.getLogger("trading_bot")
 
@@ -37,7 +38,7 @@ class WeatherTradingSignal:
     model_probability: float = 0.5   # Ensemble probability of YES outcome
     market_probability: float = 0.5  # Market's implied YES probability
     edge: float = 0.0
-    direction: str = "yes"           # "yes" or "no"
+    direction: Outcome = Outcome.YES
 
     # Confidence and sizing
     confidence: float = 0.5
@@ -90,12 +91,10 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
 
     market_yes_prob = market.yes_price
 
-    # Use existing edge calculation (treats yes=up, no=down)
-    edge, direction_raw = calculate_edge(model_yes_prob, market_yes_prob)
-    direction = "yes" if direction_raw == "up" else "no"
+    edge, direction = calculate_edge(model_yes_prob, market_yes_prob)
 
     # Entry price filter
-    entry_price = market.yes_price if direction == "yes" else market.no_price
+    entry_price = market.yes_price if direction == Outcome.YES else market.no_price
     if entry_price > settings.WEATHER_MAX_ENTRY_PRICE:
         edge = 0.0  # Zero out but still return for UI visibility
 
@@ -115,7 +114,7 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
         edge=abs(edge),
         probability=model_yes_prob,
         market_price=market_yes_prob,
-        direction=direction_raw,  # calculate_kelly_size expects "up"/"down"
+        direction=direction,
         bankroll=bankroll,
     )
     suggested_size = min(suggested_size, settings.WEATHER_MAX_TRADE_SIZE)
@@ -163,7 +162,7 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
     """
     signals = []
 
-    city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
+    city_keys = settings.weather_city_list
 
     logger.info("=" * 50)
     logger.info("WEATHER SCAN: Fetching temperature markets...")
@@ -238,7 +237,7 @@ def _persist_weather_signals(signals: list):
                 platform=signal.market.platform,
                 market_type="weather",
                 timestamp=signal.timestamp,
-                direction=signal.direction,
+                direction=signal.direction.value,
                 model_probability=signal.model_probability,
                 market_price=signal.market_probability,
                 edge=signal.edge,

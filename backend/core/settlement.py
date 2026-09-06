@@ -7,6 +7,7 @@ from typing import Optional, List, Tuple
 from sqlalchemy.orm import Session
 
 from backend.models.database import Trade, BotState, Signal
+from backend.models.outcomes import Outcome
 
 logger = logging.getLogger("trading_bot")
 
@@ -119,22 +120,18 @@ def calculate_pnl(trade: Trade, settlement_value: float) -> float:
 
     settlement_value: 1.0 if Yes outcome, 0.0 if No outcome
     """
-    direction = trade.direction
-    if direction == "up":
-        direction = "yes"
-    elif direction == "down":
-        direction = "no"
-
-    if direction == "yes":
+    if trade.direction == Outcome.YES:
         if settlement_value == 1.0:
             pnl = trade.size * (1.0 - trade.entry_price)
         else:
             pnl = -trade.size * trade.entry_price
-    else:
+    elif trade.direction == Outcome.NO:
         if settlement_value == 0.0:
             pnl = trade.size * (1.0 - trade.entry_price)
         else:
             pnl = -trade.size * trade.entry_price
+    else:
+        raise ValueError(f"Unsupported trade outcome: {trade.direction!r}")
 
     return round(pnl, 2)
 

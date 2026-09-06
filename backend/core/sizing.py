@@ -1,32 +1,33 @@
 """Shared edge and Kelly position sizing helpers."""
 from backend.config import settings
+from backend.models.outcomes import Outcome
 
 
 def calculate_edge(
     model_prob: float,
     market_price: float
-) -> tuple[float, str]:
+) -> tuple[float, Outcome]:
     """
     Calculate edge and determine direction.
 
-    Treats the first outcome as "up"/"yes" (market_price) and the second as "down"/"no".
+    Treats the first outcome as YES and the second as NO.
 
     Returns:
-        (edge, direction) where direction is "up" or "down"
+        (edge, direction) where direction is an Outcome enum
     """
     up_edge = model_prob - market_price
     down_edge = (1 - model_prob) - (1 - market_price)
 
     if up_edge >= down_edge:
-        return up_edge, "up"
-    return down_edge, "down"
+        return up_edge, Outcome.YES
+    return down_edge, Outcome.NO
 
 
 def calculate_kelly_size(
     edge: float,
     probability: float,
     market_price: float,
-    direction: str,
+    direction: Outcome | str,
     bankroll: float
 ) -> float:
     """
@@ -34,7 +35,7 @@ def calculate_kelly_size(
 
     Kelly formula: f = (p * b - q) / b
     """
-    if direction == "up":
+    if direction == Outcome.YES:
         win_prob = probability
         price = market_price
     else:
