@@ -1,5 +1,5 @@
 """FastAPI backend for weather temperature trading bot dashboard."""
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -13,13 +13,46 @@ from backend.models.database import (
     Signal, Trade, BotState, AILog
 )
 from backend.models.outcomes import Outcome
-
-from pydantic import BaseModel
+from backend.api.schemas import (
+    ActionResponse,
+    BotStats,
+    CalibrationBucket,
+    CalibrationResponse,
+    CalibrationSummary,
+    DashboardData,
+    EquityPoint,
+    EventResponse,
+    HealthResponse,
+    KalshiStatusResponse,
+    ResetResponse,
+    RootResponse,
+    ScanResponse,
+    SettlementResponse,
+    SimulatedTradeResponse,
+    TradeResponse,
+    WeatherForecastResponse,
+    WeatherMarketResponse,
+    WeatherSignalResponse,
+)
 
 app = FastAPI(
     title="Weather Trading Bot",
-    description="Polymarket + Kalshi weather temperature market trading bot",
-    version="4.0.0"
+    description=(
+        "API for a simulation-only weather temperature trading bot. "
+        "It combines Polymarket and optional Kalshi market data with "
+        "Open-Meteo ensemble forecasts to generate signals, track paper "
+        "trades, and measure calibration. No live orders are submitted."
+    ),
+    version="4.0.0",
+    openapi_tags=[
+        {"name": "System", "description": "Service health and API information."},
+        {"name": "Dashboard", "description": "Aggregated data used by the dashboard."},
+        {"name": "Trading", "description": "Simulation, scanning, and settlement operations."},
+        {"name": "Weather", "description": "Forecasts, markets, and model-generated signals."},
+        {"name": "Bot", "description": "Start, stop, and reset the scheduler state."},
+        {"name": "Calibration", "description": "Signal outcome and probability calibration data."},
+        {"name": "Integrations", "description": "External market integration status."},
+    ],
 )
 
 app.add_middleware(
@@ -52,111 +85,6 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
-
-
-class TradeResponse(BaseModel):
-    id: int
-    market_ticker: str
-    platform: str
-    event_slug: Optional[str] = None
-    direction: str
-    entry_price: float
-    size: float
-    timestamp: datetime
-    settled: bool
-    result: str
-    pnl: Optional[float]
-
-
-class BotStats(BaseModel):
-    bankroll: float
-    total_trades: int
-    winning_trades: int
-    win_rate: float
-    total_pnl: float
-    is_running: bool
-    last_run: Optional[datetime]
-
-
-class CalibrationBucket(BaseModel):
-    bucket: str
-    predicted_avg: float
-    actual_rate: float
-    count: int
-
-
-class CalibrationSummary(BaseModel):
-    total_signals: int
-    total_with_outcome: int
-    accuracy: float
-    avg_predicted_edge: float
-    avg_actual_edge: float
-    brier_score: float
-
-
-class WeatherForecastResponse(BaseModel):
-    city_key: str
-    city_name: str
-    target_date: str
-    mean_high: float
-    std_high: float
-    mean_low: float
-    std_low: float
-    num_members: int
-    ensemble_agreement: float
-
-
-class WeatherMarketResponse(BaseModel):
-    slug: str
-    market_id: str
-    platform: str = "polymarket"
-    title: str
-    city_key: str
-    city_name: str
-    target_date: str
-    threshold_f: float
-    metric: str
-    direction: str
-    yes_price: float
-    no_price: float
-    volume: float
-
-
-class WeatherSignalResponse(BaseModel):
-    market_id: str
-    city_key: str
-    city_name: str
-    target_date: str
-    threshold_f: float
-    metric: str
-    direction: str
-    model_probability: float
-    market_probability: float
-    edge: float
-    confidence: float
-    suggested_size: float
-    reasoning: str
-    ensemble_mean: float
-    ensemble_std: float
-    ensemble_members: int
-    actionable: bool = False
-    platform: str = "polymarket"
-
-
-class DashboardData(BaseModel):
-    stats: BotStats
-    recent_trades: List[TradeResponse]
-    equity_curve: List[dict]
-    calibration: Optional[CalibrationSummary] = None
-    weather_signals: List[WeatherSignalResponse] = []
-    weather_forecasts: List[WeatherForecastResponse] = []
-
-
-class EventResponse(BaseModel):
-    timestamp: str
-    type: str
-    message: str
-    data: dict = {}
 
 
 @app.on_event("startup")
@@ -216,7 +144,7 @@ async def shutdown():
     stop_scheduler()
 
 
-@app.get("/")
+@app.get("/", response_model=RootResponse, tags=["System"], summary="Get API status")
 async def root():
     return {
         "status": "ok",
@@ -225,12 +153,19 @@ async def root():
     }
 
 
-@app.get("/api/health")
+@app.get("/api/health", response_model=HealthResponse, tags=["System"], summary="Check service health")
 async def health():
     return {"status": "healthy"}
 
 
-@app.get("/api/stats", response_model=BotStats)
+@app.get(
+    "/api/stats",
+    response_model=BotStats,
+    tags=["Dashboard"],
+    summary="Get bot statistics",
+    description="Return the current simulated bankroll, trade totals, P&L, and scheduler state.",
+    responses={404: {"description": "Bot state has not been initialized."}},
+)
 async def get_stats(db: Session = Depends(get_db)):
     state = db.query(BotState).first()
     if not state:
@@ -249,10 +184,16 @@ async def get_stats(db: Session = Depends(get_db)):
     )
 
 
-@app.get("/api/trades", response_model=List[TradeResponse])
+@app.get(
+    "/api/trades",
+    response_model=List[TradeResponse],
+    tags=["Dashboard"],
+    summary="List simulated trades",
+    description="Return recent simulated trades, optionally filtered by settlement result.",
+)
 async def get_trades(
-    limit: int = 50,
-    status: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500, description="Maximum number of trades to return."),
+    status: Optional[str] = Query(None, description="Optional result filter, such as pending, win, or loss."),
     db: Session = Depends(get_db)
 ):
     query = db.query(Trade)
@@ -278,7 +219,13 @@ async def get_trades(
     ]
 
 
-@app.get("/api/equity-curve")
+@app.get(
+    "/api/equity-curve",
+    response_model=List[EquityPoint],
+    tags=["Dashboard"],
+    summary="Get the simulated equity curve",
+    description="Return cumulative realized P&L and simulated bankroll after each settled trade.",
+)
 async def get_equity_curve(db: Session = Depends(get_db)):
     trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
 
@@ -299,7 +246,14 @@ async def get_equity_curve(db: Session = Depends(get_db)):
     return curve
 
 
-@app.post("/api/simulate-trade")
+@app.post(
+    "/api/simulate-trade",
+    response_model=SimulatedTradeResponse,
+    tags=["Trading"],
+    summary="Create a simulated trade",
+    description="Find a current weather signal and create a paper trade. This endpoint never submits a live order.",
+    responses={404: {"description": "No current signal matches the requested market ticker."}, 500: {"description": "Bot state has not been initialized."}},
+)
 async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
     from backend.core.scheduler import log_event
     from backend.core.weather_signals import scan_for_weather_signals
@@ -337,7 +291,13 @@ async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
     return {"status": "ok", "trade_id": trade.id, "size": trade.size}
 
 
-@app.post("/api/run-scan")
+@app.post(
+    "/api/run-scan",
+    response_model=ScanResponse,
+    tags=["Trading"],
+    summary="Run a weather market scan",
+    description="Trigger an immediate scan and return the number of generated and actionable signals.",
+)
 async def run_scan(db: Session = Depends(get_db)):
     from backend.core.scheduler import run_manual_scan, log_event
 
@@ -363,7 +323,13 @@ async def run_scan(db: Session = Depends(get_db)):
     }
 
 
-@app.post("/api/settle-trades")
+@app.post(
+    "/api/settle-trades",
+    response_model=SettlementResponse,
+    tags=["Trading"],
+    summary="Settle pending simulated trades",
+    description="Check resolved markets and update pending paper trades and bot P&L.",
+)
 async def settle_trades_endpoint(db: Session = Depends(get_db)):
     from backend.core.settlement import settle_pending_trades, update_bot_state_with_settlements
     from backend.core.scheduler import log_event
@@ -423,7 +389,13 @@ def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
     )
 
 
-@app.get("/api/calibration")
+@app.get(
+    "/api/calibration",
+    response_model=CalibrationResponse,
+    tags=["Calibration"],
+    summary="Get signal calibration",
+    description="Compare predicted probabilities with observed outcomes in probability buckets.",
+)
 async def get_calibration(db: Session = Depends(get_db)):
     """Return calibration data: predicted probability vs actual win rate."""
     signals = db.query(Signal).filter(Signal.outcome_correct.isnot(None)).all()
@@ -459,7 +431,13 @@ async def get_calibration(db: Session = Depends(get_db)):
     return {"buckets": buckets, "summary": summary}
 
 
-@app.get("/api/kalshi/status")
+@app.get(
+    "/api/kalshi/status",
+    response_model=KalshiStatusResponse,
+    tags=["Integrations"],
+    summary="Check Kalshi connectivity",
+    description="Report whether Kalshi credentials are configured and whether an authenticated balance request succeeds.",
+)
 async def get_kalshi_status():
     """Test Kalshi API authentication and return connection status."""
     from backend.data.kalshi_client import KalshiClient, kalshi_credentials_present
@@ -484,7 +462,13 @@ async def get_kalshi_status():
         }
 
 
-@app.get("/api/weather/forecasts", response_model=List[WeatherForecastResponse])
+@app.get(
+    "/api/weather/forecasts",
+    response_model=List[WeatherForecastResponse],
+    tags=["Weather"],
+    summary="Get configured city forecasts",
+    description="Return Open-Meteo GFS ensemble forecasts for configured cities. Temperatures are in degrees Fahrenheit.",
+)
 async def get_weather_forecasts():
     """Get ensemble forecasts for configured cities."""
     if not settings.WEATHER_ENABLED:
@@ -518,7 +502,13 @@ async def get_weather_forecasts():
         return []
 
 
-@app.get("/api/weather/markets", response_model=List[WeatherMarketResponse])
+@app.get(
+    "/api/weather/markets",
+    response_model=List[WeatherMarketResponse],
+    tags=["Weather"],
+    summary="Get active weather markets",
+    description="Return active Polymarket markets and, when enabled and authenticated, Kalshi KXHIGH markets.",
+)
 async def get_weather_markets():
     """Get active weather temperature markets."""
     if not settings.WEATHER_ENABLED:
@@ -562,7 +552,13 @@ async def get_weather_markets():
         return []
 
 
-@app.get("/api/weather/signals", response_model=List[WeatherSignalResponse])
+@app.get(
+    "/api/weather/signals",
+    response_model=List[WeatherSignalResponse],
+    tags=["Weather"],
+    summary="Get current weather signals",
+    description="Return model probabilities, market probabilities, edge, confidence, and suggested paper-trade size.",
+)
 async def get_weather_signals():
     """Get current weather trading signals."""
     if not settings.WEATHER_ENABLED:
@@ -600,8 +596,13 @@ def _weather_signal_to_response(s) -> WeatherSignalResponse:
     )
 
 
-@app.get("/api/events", response_model=List[EventResponse])
-async def get_events(limit: int = 50):
+@app.get(
+    "/api/events",
+    response_model=List[EventResponse],
+    tags=["Dashboard"],
+    summary="Get recent bot events",
+)
+async def get_events(limit: int = Query(50, ge=1, le=500, description="Maximum number of events to return.")):
     from backend.core.scheduler import get_recent_events
     events = get_recent_events(limit)
     return [
@@ -615,7 +616,13 @@ async def get_events(limit: int = 50):
     ]
 
 
-@app.post("/api/bot/start")
+@app.post(
+    "/api/bot/start",
+    response_model=ActionResponse,
+    tags=["Bot"],
+    summary="Start the bot scheduler",
+    description="Enable scheduled scanning and mark the bot as running. Trading remains simulation-only.",
+)
 async def start_bot(db: Session = Depends(get_db)):
     from backend.core.scheduler import start_scheduler, log_event, is_scheduler_running
 
@@ -631,7 +638,13 @@ async def start_bot(db: Session = Depends(get_db)):
     return {"status": "started", "is_running": True}
 
 
-@app.post("/api/bot/stop")
+@app.post(
+    "/api/bot/stop",
+    response_model=ActionResponse,
+    tags=["Bot"],
+    summary="Stop the bot scheduler",
+    description="Pause scheduled scanning without deleting simulated trades or resetting P&L.",
+)
 async def stop_bot(db: Session = Depends(get_db)):
     from backend.core.scheduler import log_event
 
@@ -644,7 +657,14 @@ async def stop_bot(db: Session = Depends(get_db)):
     return {"status": "stopped", "is_running": False}
 
 
-@app.post("/api/bot/reset")
+@app.post(
+    "/api/bot/reset",
+    response_model=ResetResponse,
+    tags=["Bot"],
+    summary="Reset simulated bot state",
+    description="Delete simulated trades and AI logs, then restore the configured initial bankroll.",
+    responses={500: {"description": "The database transaction could not be completed."}},
+)
 async def reset_bot(db: Session = Depends(get_db)):
     from backend.core.scheduler import log_event
 
@@ -675,7 +695,14 @@ async def reset_bot(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Reset failed: {e}")
 
 
-@app.get("/api/dashboard", response_model=DashboardData)
+@app.get(
+    "/api/dashboard",
+    response_model=DashboardData,
+    tags=["Dashboard"],
+    summary="Get the complete dashboard payload",
+    description="Return statistics, recent simulated trades, equity, calibration, weather signals, and forecasts in one call.",
+    responses={404: {"description": "Bot state has not been initialized."}},
+)
 async def get_dashboard(db: Session = Depends(get_db)):
     """Get all dashboard data in one call."""
     stats = await get_stats(db)

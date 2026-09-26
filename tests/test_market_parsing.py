@@ -1,5 +1,5 @@
 import unittest
-from datetime import date
+from datetime import date, timedelta
 
 from backend.data.weather_markets import (
     _parse_polymarket_weather,
@@ -24,9 +24,10 @@ class WeatherMarketParsingTests(unittest.TestCase):
         self.assertIsNone(_parse_weather_market_title("Seattle temperature above 70°F on September 7, 2026?"))
 
     def test_parse_market_accepts_json_prices_and_filters_closed_markets(self):
+        target_date = date.today() + timedelta(days=7)
         market_data = {
             "id": 123,
-            "question": "NYC high temperature above 70°F on September 7, 2026",
+            "question": f"NYC high temperature above 70°F on {target_date:%B %d, %Y}",
             "outcomePrices": '["0.60", "0.40"]',
             "volume": "250.5",
         }
@@ -35,6 +36,7 @@ class WeatherMarketParsingTests(unittest.TestCase):
 
         self.assertIsNotNone(market)
         self.assertEqual(market.market_id, "123")
+        self.assertEqual(market.target_date, target_date)
         self.assertEqual(market.yes_price, 0.60)
         self.assertEqual(market.volume, 250.5)
 
