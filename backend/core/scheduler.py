@@ -1,17 +1,18 @@
 """Background scheduler for weather temperature trading."""
+
 import asyncio
+import logging
 from datetime import datetime
 from typing import List, Optional
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import func
-import logging
 
 from backend.config import settings
-from backend.models.database import SessionLocal, Trade, BotState, Signal
+from backend.models.database import BotState, SessionLocal, Signal, Trade
 from backend.models.outcomes import Outcome
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("trading_bot")
 
 # Global scheduler instance
@@ -24,12 +25,7 @@ MAX_LOG_SIZE = 200
 
 def log_event(event_type: str, message: str, data: dict = None):
     """Log an event for terminal display."""
-    event = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "type": event_type,
-        "message": message,
-        "data": data or {}
-    }
+    event = {"timestamp": datetime.utcnow().isoformat(), "type": event_type, "message": message, "data": data or {}}
     event_log.append(event)
 
     while len(event_log) > MAX_LOG_SIZE:
@@ -41,7 +37,7 @@ def log_event(event_type: str, message: str, data: dict = None):
         "success": logger.info,
         "info": logger.info,
         "data": logger.debug,
-        "trade": logger.info
+        "trade": logger.info,
     }.get(event_type, logger.info)
 
     log_func(f"[{event_type.upper()}] {message}")
@@ -65,10 +61,14 @@ async def weather_scan_and_trade_job():
         signals = await scan_for_weather_signals()
         actionable = [s for s in signals if s.passes_threshold]
 
-        log_event("data", f"Weather: {len(signals)} signals, {len(actionable)} actionable", {
-            "total_signals": len(signals),
-            "actionable": len(actionable),
-        })
+        log_event(
+            "data",
+            f"Weather: {len(signals)} signals, {len(actionable)} actionable",
+            {
+                "total_signals": len(signals),
+                "actionable": len(actionable),
+            },
+        )
 
         if not actionable:
             log_event("info", "No actionable weather signals")
@@ -91,35 +91,50 @@ async def weather_scan_and_trade_job():
 
             # --- Daily loss circuit breaker ---
             today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-            daily_pnl = db.query(func.coalesce(func.sum(Trade.pnl), 0.0)).filter(
-                Trade.settled == True,
-                Trade.settlement_time >= today_start
-            ).scalar()
+            daily_pnl = (
+                db.query(func.coalesce(func.sum(Trade.pnl), 0.0))
+                .filter(Trade.settled.is_(True), Trade.settlement_time >= today_start)
+                .scalar()
+            )
 
             if daily_pnl <= -settings.DAILY_LOSS_LIMIT:
-                log_event("warning", f"Daily loss limit hit: ${daily_pnl:.2f} (limit: -${settings.DAILY_LOSS_LIMIT:.0f}). Stopping trades.")
+                log_event(
+                    "warning",
+                    f"Daily loss limit hit: ${daily_pnl:.2f} "
+                    f"(limit: -${settings.DAILY_LOSS_LIMIT:.0f}). Stopping trades.",
+                )
                 return
 
-            total_pending = db.query(Trade).filter(Trade.settled == False).count()
+            total_pending = db.query(Trade).filter(Trade.settled.is_(False)).count()
             if total_pending >= settings.MAX_TOTAL_PENDING_TRADES:
                 log_event("info", f"Max pending trades reached ({total_pending}/{settings.MAX_TOTAL_PENDING_TRADES})")
                 return
 
-            weather_pending = db.query(func.coalesce(func.sum(Trade.size), 0.0)).filter(
-                Trade.settled == False,
-                Trade.market_type == "weather",
-            ).scalar()
+            weather_pending = (
+                db.query(func.coalesce(func.sum(Trade.size), 0.0))
+                .filter(
+                    Trade.settled.is_(False),
+                    Trade.market_type == "weather",
+                )
+                .scalar()
+            )
 
             if weather_pending >= MAX_WEATHER_ALLOCATION:
-                log_event("info", f"Weather allocation limit reached: ${weather_pending:.0f}/${MAX_WEATHER_ALLOCATION:.0f}")
+                log_event(
+                    "info", f"Weather allocation limit reached: ${weather_pending:.0f}/${MAX_WEATHER_ALLOCATION:.0f}"
+                )
                 return
 
             trades_executed = 0
             for signal in actionable[:MAX_TRADES_PER_SCAN]:
-                existing = db.query(Trade).filter(
-                    Trade.market_ticker == signal.market.market_id,
-                    Trade.settled == False,
-                ).first()
+                existing = (
+                    db.query(Trade)
+                    .filter(
+                        Trade.market_ticker == signal.market.market_id,
+                        Trade.settled.is_(False),
+                    )
+                    .first()
+                )
 
                 if existing:
                     continue
@@ -152,11 +167,16 @@ async def weather_scan_and_trade_job():
                 db.add(trade)
                 db.flush()
 
-                matching_signal = db.query(Signal).filter(
-                    Signal.market_ticker == signal.market.market_id,
-                    Signal.market_type == "weather",
-                    Signal.executed == False,
-                ).order_by(Signal.timestamp.desc()).first()
+                matching_signal = (
+                    db.query(Signal)
+                    .filter(
+                        Signal.market_ticker == signal.market.market_id,
+                        Signal.market_type == "weather",
+                        Signal.executed.is_(False),
+                    )
+                    .order_by(Signal.timestamp.desc())
+                    .first()
+                )
                 if matching_signal:
                     matching_signal.executed = True
                     trade.signal_id = matching_signal.id
@@ -164,7 +184,8 @@ async def weather_scan_and_trade_job():
                 state.total_trades += 1
                 trades_executed += 1
 
-                log_event("trade",
+                log_event(
+                    "trade",
                     f"WX {signal.market.city_name}: {signal.direction.upper()} "
                     f"${trade_size:.0f} @ {entry_price:.0%} | "
                     f"{signal.market.metric} {signal.market.direction} {signal.market.threshold_f:.0f}F",
@@ -176,7 +197,7 @@ async def weather_scan_and_trade_job():
                         "entry_price": entry_price,
                         "city": signal.market.city_name,
                         "platform": signal.market.platform,
-                    }
+                    },
                 )
 
             state.last_run = datetime.utcnow()
@@ -204,7 +225,7 @@ async def settlement_job():
 
         db = SessionLocal()
         try:
-            pending_count = db.query(Trade).filter(Trade.settled == False).count()
+            pending_count = db.query(Trade).filter(Trade.settled.is_(False)).count()
 
             if pending_count == 0:
                 log_event("data", "No pending trades to settle")
@@ -221,12 +242,11 @@ async def settlement_job():
                 losses = sum(1 for t in settled if t.result == "loss")
                 total_pnl = sum(t.pnl for t in settled if t.pnl is not None)
 
-                log_event("success", f"Settled {len(settled)} trades: {wins}W/{losses}L, P&L: ${total_pnl:.2f}", {
-                    "settled_count": len(settled),
-                    "wins": wins,
-                    "losses": losses,
-                    "pnl": total_pnl
-                })
+                log_event(
+                    "success",
+                    f"Settled {len(settled)} trades: {wins}W/{losses}L, P&L: ${total_pnl:.2f}",
+                    {"settled_count": len(settled), "wins": wins, "losses": losses, "pnl": total_pnl},
+                )
 
                 for trade in settled:
                     result_prefix = "+" if trade.pnl and trade.pnl > 0 else ""
@@ -248,17 +268,17 @@ async def heartbeat_job():
     try:
         db = SessionLocal()
         state = db.query(BotState).first()
-        pending = db.query(Trade).filter(Trade.settled == False).count()
+        pending = db.query(Trade).filter(Trade.settled.is_(False)).count()
 
         if state is None:
             log_event("warning", "Heartbeat: Bot state not initialized")
             return
 
-        log_event("data", f"Heartbeat: {pending} pending trades, bankroll: ${state.bankroll:.2f}", {
-            "pending_trades": pending,
-            "bankroll": state.bankroll,
-            "is_running": state.is_running
-        })
+        log_event(
+            "data",
+            f"Heartbeat: {pending} pending trades, bankroll: ${state.bankroll:.2f}",
+            {"pending_trades": pending, "bankroll": state.bankroll, "is_running": state.is_running},
+        )
     except Exception as e:
         log_event("warning", f"Heartbeat failed: {str(e)}")
     finally:
@@ -296,24 +316,22 @@ def start_scheduler():
         IntervalTrigger(seconds=settle_seconds),
         id="settlement_check",
         replace_existing=True,
-        max_instances=1
+        max_instances=1,
     )
 
-    scheduler.add_job(
-        heartbeat_job,
-        IntervalTrigger(minutes=1),
-        id="heartbeat",
-        replace_existing=True,
-        max_instances=1
-    )
+    scheduler.add_job(heartbeat_job, IntervalTrigger(minutes=1), id="heartbeat", replace_existing=True, max_instances=1)
 
     scheduler.start()
-    log_event("success", "Weather trading scheduler started", {
-        "scan_interval": f"{scan_seconds}s",
-        "settlement_interval": f"{settle_seconds}s",
-        "min_edge": f"{settings.WEATHER_MIN_EDGE_THRESHOLD:.0%}",
-        "cities": settings.WEATHER_CITIES,
-    })
+    log_event(
+        "success",
+        "Weather trading scheduler started",
+        {
+            "scan_interval": f"{scan_seconds}s",
+            "settlement_interval": f"{settle_seconds}s",
+            "min_edge": f"{settings.WEATHER_MIN_EDGE_THRESHOLD:.0%}",
+            "cities": settings.WEATHER_CITIES,
+        },
+    )
 
     asyncio.create_task(weather_scan_and_trade_job())
 

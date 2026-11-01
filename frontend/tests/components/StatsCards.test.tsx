@@ -12,7 +12,7 @@ describe('StatsCards', () => {
       win_rate: 0.6,
       total_pnl: 300,
       is_running: true,
-      last_run: null
+      last_run: null,
     }
 
     render(<StatsCards stats={stats} />)
@@ -33,7 +33,7 @@ describe('StatsCards', () => {
       win_rate: 0,
       total_pnl: 0,
       is_running: false,
-      last_run: null
+      last_run: null,
     }
 
     render(<StatsCards stats={stats} />)
@@ -52,7 +52,7 @@ describe('StatsCards', () => {
       win_rate: 0.25,
       total_pnl: -150,
       is_running: true,
-      last_run: null
+      last_run: null,
     }
 
     const { container } = render(<StatsCards stats={stats} />)
@@ -73,7 +73,7 @@ describe('StatsCards', () => {
       win_rate: 0.6667,
       total_pnl: 0,
       is_running: false,
-      last_run: null
+      last_run: null,
     }
 
     render(<StatsCards stats={stats} />)

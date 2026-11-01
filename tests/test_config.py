@@ -29,6 +29,17 @@ class SettingsValidationTests(unittest.TestCase):
         settings = Settings(WEATHER_CITIES="nyc,nyc,chicago")
         self.assertEqual(settings.weather_city_list, ["nyc", "chicago"])
 
+    def test_api_key_defaults_to_disabled_and_cors_origins_are_normalized(self):
+        settings = Settings()
+        self.assertIsNone(settings.API_KEY)
+        self.assertEqual(settings.cors_origin_list, ["*"])
+
+        settings = Settings(CORS_ORIGINS="https://example.com, https://app.example.com")
+        self.assertEqual(
+            settings.cors_origin_list,
+            ["https://example.com", "https://app.example.com"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

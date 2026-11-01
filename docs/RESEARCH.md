@@ -87,13 +87,10 @@ The larger edge determines the suggested direction. The signal is actionable onl
 
 The settlement layer checks the platform's own resolution result rather than deriving a result from a forecast. It records the settlement value, win/loss result, P&L, bankroll update, and linked signal outcome.
 
-NWS station observations are available in the weather data module for the six configured cities. They are useful as weather observation data, but the current trade settlement path uses Polymarket or Kalshi market resolution.
-
 ## Useful References
 
 - [Open-Meteo Ensemble API](https://open-meteo.com/en/docs/ensemble-api)
 - [Open-Meteo weather API](https://open-meteo.com/)
-- [NWS API](https://www.weather.gov/documentation/services-web-api)
 - [Kalshi API Documentation](https://docs.kalshi.com/welcome)
 - [Kalshi Weather Markets](https://help.kalshi.com/markets/popular-markets/weather-markets)
 - [Polymarket API Endpoints](https://docs.polymarket.com/quickstart/reference/endpoints)

@@ -5,15 +5,25 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'jsdom',
-    setupFiles: ['./tests/setup.ts']
+    setupFiles: ['./tests/setup.ts'],
   },
   server: {
     port: 3000,
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
-        changeOrigin: true
-      }
-    }
-  }
+        changeOrigin: true,
+      },
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom', '@tanstack/react-query', 'axios'],
+          'vendor-charts': ['recharts'],
+        },
+      },
+    },
+  },
 })

@@ -16,7 +16,7 @@ const trades: Trade[] = [
     timestamp: '2026-01-01T12:00:00Z',
     settled: true,
     result: 'win',
-    pnl: 20
+    pnl: 20,
   },
   {
     id: 2,
@@ -29,7 +29,7 @@ const trades: Trade[] = [
     timestamp: '2026-01-02T12:00:00Z',
     settled: true,
     result: 'loss',
-    pnl: -15
+    pnl: -15,
   },
   {
     id: 3,
@@ -42,8 +42,8 @@ const trades: Trade[] = [
     timestamp: '2026-01-03T12:00:00Z',
     settled: false,
     result: 'pending',
-    pnl: null
-  }
+    pnl: null,
+  },
 ]
 
 describe('TradesTable', () => {

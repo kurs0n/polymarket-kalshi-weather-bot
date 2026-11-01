@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
-from backend.config import settings
 from backend.api.schemas import HealthResponse, RootResponse
+from backend.config import settings
 
 router = APIRouter()
 

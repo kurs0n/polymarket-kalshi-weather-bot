@@ -15,7 +15,7 @@ const STATUSES = [
   { value: 'all', label: 'All Status' },
   { value: 'pending', label: 'Pending' },
   { value: 'win', label: 'Won' },
-  { value: 'loss', label: 'Lost' }
+  { value: 'loss', label: 'Lost' },
 ] as const
 
 export function FilterBar({ filters, onFilterChange, showStatus = false }: Props) {
@@ -46,7 +46,9 @@ export function FilterBar({ filters, onFilterChange, showStatus = false }: Props
             className="pl-4 pr-8 py-2 bg-neutral-950 border border-neutral-800 text-sm text-neutral-300 focus:outline-none focus:border-neutral-600 appearance-none cursor-pointer"
           >
             {STATUSES.map((s) => (
-              <option key={s.value} value={s.value}>{s.label}</option>
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
             ))}
           </select>
           <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">

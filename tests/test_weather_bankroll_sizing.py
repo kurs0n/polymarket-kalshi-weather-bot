@@ -24,8 +24,9 @@ class WeatherBankrollSizingTests(unittest.TestCase):
         db = MagicMock()
         db.query.side_effect = RuntimeError("database unavailable")
 
-        with patch.object(weather_signals, "SessionLocal", return_value=db), patch.object(
-            weather_signals.settings, "INITIAL_BANKROLL", 10000.0
+        with (
+            patch.object(weather_signals, "SessionLocal", return_value=db),
+            patch.object(weather_signals.settings, "INITIAL_BANKROLL", 10000.0),
         ):
             bankroll = weather_signals._get_current_bankroll()
 
@@ -56,16 +57,12 @@ class WeatherBankrollSizingTests(unittest.TestCase):
         )
 
         async def run_signal(bankroll):
-            with patch.object(
-                weather_signals, "fetch_ensemble_forecast", return_value=forecast
-            ), patch.object(
-                weather_signals, "_get_current_bankroll", return_value=bankroll
-            ), patch.object(
-                weather_signals.settings, "WEATHER_MAX_ENTRY_PRICE", 0.70
-            ), patch.object(
-                weather_signals.settings, "WEATHER_MAX_TRADE_SIZE", 1000.0
-            ), patch.object(
-                weather_signals.settings, "MAX_TRADE_SIZE", 1000.0
+            with (
+                patch.object(weather_signals, "fetch_ensemble_forecast", return_value=forecast),
+                patch.object(weather_signals, "_get_current_bankroll", return_value=bankroll),
+                patch.object(weather_signals.settings, "WEATHER_MAX_ENTRY_PRICE", 0.70),
+                patch.object(weather_signals.settings, "WEATHER_MAX_TRADE_SIZE", 1000.0),
+                patch.object(weather_signals.settings, "MAX_TRADE_SIZE", 1000.0),
             ):
                 return await weather_signals.generate_weather_signal(market)
 
@@ -104,16 +101,12 @@ class WeatherBankrollSizingTests(unittest.TestCase):
         )
 
         async def run_signal():
-            with patch.object(
-                weather_signals, "fetch_ensemble_forecast", return_value=forecast
-            ), patch.object(
-                weather_signals, "_get_current_bankroll", return_value=0.0
-            ), patch.object(
-                weather_signals.settings, "WEATHER_MAX_ENTRY_PRICE", 0.70
-            ), patch.object(
-                weather_signals.settings, "WEATHER_MAX_TRADE_SIZE", 1000.0
-            ), patch.object(
-                weather_signals.settings, "MAX_TRADE_SIZE", 1000.0
+            with (
+                patch.object(weather_signals, "fetch_ensemble_forecast", return_value=forecast),
+                patch.object(weather_signals, "_get_current_bankroll", return_value=0.0),
+                patch.object(weather_signals.settings, "WEATHER_MAX_ENTRY_PRICE", 0.70),
+                patch.object(weather_signals.settings, "WEATHER_MAX_TRADE_SIZE", 1000.0),
+                patch.object(weather_signals.settings, "MAX_TRADE_SIZE", 1000.0),
             ):
                 return await weather_signals.generate_weather_signal(market)
 
@@ -147,18 +140,13 @@ class WeatherBankrollSizingTests(unittest.TestCase):
         )
 
         async def run_signal():
-            with patch.object(
-                weather_signals, "fetch_ensemble_forecast", return_value=forecast
-            ), patch.object(
-                weather_signals, "_get_current_bankroll", return_value=10000.0
-            ), patch.object(
-                weather_signals.settings, "WEATHER_MAX_ENTRY_PRICE", 0.70
-            ), patch.object(
-                weather_signals.settings, "WEATHER_MIN_EDGE_THRESHOLD", 0.05
-            ), patch.object(
-                weather_signals.settings, "WEATHER_MAX_TRADE_SIZE", 1000.0
-            ), patch.object(
-                weather_signals.settings, "MAX_TRADE_SIZE", 1000.0
+            with (
+                patch.object(weather_signals, "fetch_ensemble_forecast", return_value=forecast),
+                patch.object(weather_signals, "_get_current_bankroll", return_value=10000.0),
+                patch.object(weather_signals.settings, "WEATHER_MAX_ENTRY_PRICE", 0.70),
+                patch.object(weather_signals.settings, "WEATHER_MIN_EDGE_THRESHOLD", 0.05),
+                patch.object(weather_signals.settings, "WEATHER_MAX_TRADE_SIZE", 1000.0),
+                patch.object(weather_signals.settings, "MAX_TRADE_SIZE", 1000.0),
             ):
                 return await weather_signals.generate_weather_signal(market)
 

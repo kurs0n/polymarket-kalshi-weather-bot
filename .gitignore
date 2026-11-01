@@ -55,4 +55,10 @@ logs/
 .coverage
 htmlcov/
 .pytest_cache/
+.coverage
+htmlcov/
 *.pem
+.ruff_cache/
+.venv/
+.eslintcache
+frontend/coverage/

@@ -24,5 +24,5 @@ description: 'Use when changing or debugging the React and TypeScript dashboard,
 
 ## Verification
 
-- Run `npm run build` from `frontend/`; this runs the strict TypeScript compiler before the Vite production build.
-- The package currently has no dedicated frontend test or lint script. For API/UI changes, verify the relevant backend route and payload contract as well.
+- Run `npm test` (Vitest + React Testing Library), `npm run lint` (ESLint), `npm run format:check` (Prettier), and `npm run build` from `frontend/`.
+- For API/UI changes, verify the relevant backend route and payload contract as well.

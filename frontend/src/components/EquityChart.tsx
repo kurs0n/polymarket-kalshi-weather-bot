@@ -6,7 +6,7 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  ReferenceLine
+  ReferenceLine,
 } from 'recharts'
 import { motion } from 'framer-motion'
 import type { EquityPoint } from '../types'
@@ -16,9 +16,19 @@ interface Props {
   initialBankroll: number
 }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+interface TooltipItem {
+  value?: number
+}
+
+interface CustomTooltipProps {
+  active?: boolean
+  payload?: TooltipItem[]
+  label?: string | number
+}
+
+const CustomTooltip = ({ active, payload, label }: CustomTooltipProps) => {
   if (!active || !payload || !payload.length) return null
-  const value = payload[0].value
+  const value = payload[0].value ?? 0
   const isPositive = value >= 0
 
   return (
@@ -43,16 +53,16 @@ export function EquityChart({ data, initialBankroll }: Props) {
 
   const chartData = [
     { timestamp: 'Start', pnl: 0, bankroll: initialBankroll },
-    ...data.map(d => ({
+    ...data.map((d) => ({
       ...d,
-      timestamp: new Date(d.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-    }))
+      timestamp: new Date(d.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    })),
   ]
 
   const currentPnl = data.length > 0 ? data[data.length - 1].pnl : 0
   const isPositive = currentPnl >= 0
-  const minPnl = Math.min(0, ...data.map(d => d.pnl))
-  const maxPnl = Math.max(0, ...data.map(d => d.pnl))
+  const minPnl = Math.min(0, ...data.map((d) => d.pnl))
+  const maxPnl = Math.max(0, ...data.map((d) => d.pnl))
   const padding = Math.max(Math.abs(minPnl), Math.abs(maxPnl)) * 0.2
 
   const gradientId = `equityGradient-${isPositive ? 'green' : 'red'}`
@@ -68,16 +78,8 @@ export function EquityChart({ data, initialBankroll }: Props) {
         <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -15, bottom: 0 }}>
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-              <stop
-                offset="5%"
-                stopColor={isPositive ? '#22c55e' : '#ef4444'}
-                stopOpacity={0.25}
-              />
-              <stop
-                offset="95%"
-                stopColor={isPositive ? '#22c55e' : '#ef4444'}
-                stopOpacity={0}
-              />
+              <stop offset="5%" stopColor={isPositive ? '#22c55e' : '#ef4444'} stopOpacity={0.25} />
+              <stop offset="95%" stopColor={isPositive ? '#22c55e' : '#ef4444'} stopOpacity={0} />
             </linearGradient>
           </defs>
 

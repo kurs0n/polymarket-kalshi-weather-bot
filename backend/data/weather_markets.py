@@ -1,10 +1,12 @@
 """Weather temperature market fetcher from Polymarket."""
-import httpx
-import re
+
 import logging
+import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from typing import List, Optional
+
+import httpx
 
 logger = logging.getLogger("trading_bot")
 
@@ -24,17 +26,36 @@ CITY_ALIASES = {
 
 # Month name to number
 MONTH_MAP = {
-    "january": 1, "february": 2, "march": 3, "april": 4,
-    "may": 5, "june": 6, "july": 7, "august": 8,
-    "september": 9, "october": 10, "november": 11, "december": 12,
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
-    "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
 }
 
 
 @dataclass
 class WeatherMarket:
     """A weather temperature prediction market."""
+
     slug: str
     market_id: str
     platform: str
@@ -42,11 +63,11 @@ class WeatherMarket:
     city_key: str
     city_name: str
     target_date: date
-    threshold_f: float       # Temperature threshold in Fahrenheit
-    metric: str              # "high" or "low"
-    direction: str           # "above" or "below"
-    yes_price: float         # Price of YES outcome (0-1)
-    no_price: float          # Price of NO outcome (0-1)
+    threshold_f: float  # Temperature threshold in Fahrenheit
+    metric: str  # "high" or "low"
+    direction: str  # "above" or "below"
+    yes_price: float  # Price of YES outcome (0-1)
+    no_price: float  # Price of NO outcome (0-1)
     volume: float = 0.0
     closed: bool = False
 
@@ -75,6 +96,7 @@ def _parse_weather_market_title(title: str) -> Optional[dict]:
         if alias in title_lower:
             city_key = key
             from backend.data.weather import CITY_CONFIG
+
             city_name = CITY_CONFIG[key]["name"]
             break
 
@@ -82,9 +104,9 @@ def _parse_weather_market_title(title: str) -> Optional[dict]:
         return None
 
     # Extract threshold temperature
-    temp_match = re.search(r'(\d+)\s*°?\s*f', title_lower)
+    temp_match = re.search(r"(\d+)\s*°?\s*f", title_lower)
     if not temp_match:
-        temp_match = re.search(r'(\d+)\s*degrees', title_lower)
+        temp_match = re.search(r"(\d+)\s*degrees", title_lower)
     if not temp_match:
         return None
     threshold_f = float(temp_match.group(1))
@@ -122,7 +144,7 @@ def _extract_date(text: str) -> Optional[date]:
     month_names = "|".join(MONTH_MAP.keys())
 
     # Pattern: "March 5, 2026" or "March 5 2026" or "March 5"
-    for match in re.finditer(rf'({month_names})\s+(\d{{1,2}})(?:\s*,?\s*(\d{{4}}))?', text):
+    for match in re.finditer(rf"({month_names})\s+(\d{{1,2}})(?:\s*,?\s*(\d{{4}}))?", text):
         month_str = match.group(1)
         day = int(match.group(2))
         year = int(match.group(3)) if match.group(3) else today.year
@@ -135,7 +157,7 @@ def _extract_date(text: str) -> Optional[date]:
                 continue
 
     # Pattern: "3/5/2026" or "03/05"
-    match = re.search(r'(\d{1,2})/(\d{1,2})(?:/(\d{4}))?', text)
+    match = re.search(r"(\d{1,2})/(\d{1,2})(?:/(\d{4}))?", text)
     if match:
         month = int(match.group(1))
         day = int(match.group(2))
@@ -166,7 +188,7 @@ async def fetch_polymarket_weather_markets(city_keys: Optional[List[str]] = None
                             "closed": "false",
                             "limit": 100,
                             "tag": "Weather",
-                        }
+                        },
                     )
                     response.raise_for_status()
                     events = response.json()
@@ -190,7 +212,7 @@ async def fetch_polymarket_weather_markets(city_keys: Optional[List[str]] = None
                             "closed": "false",
                             "limit": 100,
                             "slug_contains": slug_pattern,
-                        }
+                        },
                     )
                     response.raise_for_status()
                     events = response.json()
@@ -238,6 +260,7 @@ def _parse_polymarket_weather(
     outcome_prices = market_data.get("outcomePrices", [])
     if isinstance(outcome_prices, str):
         import json
+
         try:
             outcome_prices = json.loads(outcome_prices)
         except Exception:

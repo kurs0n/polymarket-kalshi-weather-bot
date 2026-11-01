@@ -24,7 +24,7 @@ export function formatCurrency(value: number, showSign = false): string {
     style: 'currency',
     currency: 'USD',
     minimumFractionDigits: 0,
-    maximumFractionDigits: 2
+    maximumFractionDigits: 2,
   }).format(Math.abs(value))
 
   if (showSign && value !== 0) {
@@ -41,13 +41,13 @@ export const platformStyles: Record<string, { badge: string; icon: string; name:
   polymarket: {
     badge: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
     icon: 'P',
-    name: 'Polymarket'
+    name: 'Polymarket',
   },
   kalshi: {
     badge: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
     icon: 'K',
-    name: 'Kalshi'
-  }
+    name: 'Kalshi',
+  },
 }
 
 export function getPnlColorClass(pnl: number | null): string {
@@ -64,7 +64,7 @@ export function formatCountdown(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
-export function debounce<T extends (...args: any[]) => void>(
+export function debounce<T extends (...args: never[]) => void>(
   func: T,
   wait: number
 ): (...args: Parameters<T>) => void {

@@ -3,8 +3,9 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from backend.config import settings
+from backend.api.deps import require_api_key
 from backend.api.schemas import ScanResponse, SettlementResponse, SimulatedTradeResponse
+from backend.config import settings
 from backend.models.database import BotState, Trade, get_db
 from backend.models.outcomes import Outcome
 
@@ -13,11 +14,15 @@ router = APIRouter()
 
 @router.post(
     "/api/simulate-trade",
+    dependencies=[Depends(require_api_key)],
     response_model=SimulatedTradeResponse,
     tags=["Trading"],
     summary="Create a simulated trade",
     description="Find a current weather signal and create a paper trade. This endpoint never submits a live order.",
-    responses={404: {"description": "No current signal matches the requested market ticker."}, 500: {"description": "Bot state has not been initialized."}},
+    responses={
+        404: {"description": "No current signal matches the requested market ticker."},
+        500: {"description": "Bot state has not been initialized."},
+    },
 )
 async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
     from backend.core.scheduler import log_event
@@ -58,6 +63,7 @@ async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
 
 @router.post(
     "/api/run-scan",
+    dependencies=[Depends(require_api_key)],
     response_model=ScanResponse,
     tags=["Trading"],
     summary="Run a weather market scan",
@@ -91,6 +97,7 @@ async def run_scan(db: Session = Depends(get_db)):
 
 @router.post(
     "/api/settle-trades",
+    dependencies=[Depends(require_api_key)],
     response_model=SettlementResponse,
     tags=["Trading"],
     summary="Settle pending simulated trades",

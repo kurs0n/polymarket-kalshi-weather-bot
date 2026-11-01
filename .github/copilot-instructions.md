@@ -6,7 +6,7 @@ This repository is a weather-temperature prediction-market bot with a Python API
 
 - Backend: Python 3.10+, FastAPI, Pydantic Settings, SQLAlchemy, APScheduler, and async HTTP clients. Main ownership boundaries are `backend/api`, `backend/core`, `backend/data`, and `backend/models`.
 - Frontend: React 18, TypeScript 5, Vite, TanStack Query, Axios, Tailwind CSS, and chart/map libraries under `frontend/src`.
-- API contracts are defined by Pydantic response models in `backend/api/main.py` and TypeScript types/client code in `frontend/src/types.ts` and `frontend/src/api.ts`. Keep both sides aligned when changing payloads.
+- API contracts are defined by Pydantic models in `backend/api/schemas.py`, route modules in `backend/api/routes/`, and TypeScript types/client code in `frontend/src/types.ts` and `frontend/src/api.ts`. Keep both sides aligned when changing payloads.
 - SQLite is the default database; `DATABASE_URL` can select another SQLAlchemy-supported database. Kalshi is optional. Keep credentials in environment variables and out of source/log output.
 
 ## Working Rules
@@ -18,8 +18,9 @@ This repository is a weather-temperature prediction-market bot with a Python API
 
 ## Build And Test
 
-- Backend tests: `python -m unittest discover -s tests` from the repository root; `./run_tests.sh` is the project wrapper.
-- Frontend checks: `cd frontend && npm run build` (TypeScript check plus Vite build).
+- Backend lint/format: `ruff check backend tests run.py` and `ruff format --check backend tests run.py` (dev deps in `requirements-dev.txt`).
+- Backend tests: `python -m unittest discover -s tests` from the repository root; `./run_tests.sh` is the project wrapper for backend and frontend tests.
+- Frontend checks: `cd frontend && npm run lint && npm run format:check && npm test && npm run build` (ESLint, Prettier, Vitest, then TypeScript plus Vite build).
 - Local services: run `uvicorn backend.api.main:app --reload --port 8000` from the root and `npm run dev` from `frontend/` (Vite port `3000`, `/api` proxy to port `8000`).
-- Backend configuration is loaded from environment variables and `.env` by `backend/config.py`; never add real keys or local secrets to tracked files.
+- Backend configuration is loaded from environment variables and `.env` by `backend/config.py`; never add real keys or local secrets to tracked files. Mutating endpoints require `X-API-Key` when `API_KEY` is set.
 - If after changes, test or tests are not passing let human decide to change the tests or change the functionality.

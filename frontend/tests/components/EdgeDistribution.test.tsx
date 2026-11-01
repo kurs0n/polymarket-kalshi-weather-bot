@@ -1,12 +1,13 @@
+import type { ReactNode } from 'react'
 import { render, screen } from '@testing-library/react'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import type { WeatherSignal } from '../../src/types'
 
 vi.mock('recharts', () => ({
-  ResponsiveContainer: ({ children }: { children: any }) => <div>{children}</div>,
+  ResponsiveContainer: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   BarChart: ({ data }: { data: Array<{ bucket: string }> }) => (
     <div>
-      {data.map(item => (
+      {data.map((item) => (
         <span key={item.bucket}>{item.bucket}</span>
       ))}
     </div>
@@ -49,7 +50,7 @@ const signals: WeatherSignal[] = [
     ensemble_std: 4,
     ensemble_members: 30,
     actionable: true,
-    platform: 'kalshi'
+    platform: 'kalshi',
   },
   {
     market_id: 'B',
@@ -69,7 +70,7 @@ const signals: WeatherSignal[] = [
     ensemble_std: 3,
     ensemble_members: 30,
     actionable: true,
-    platform: 'polymarket'
+    platform: 'polymarket',
   },
   {
     market_id: 'C',
@@ -89,8 +90,8 @@ const signals: WeatherSignal[] = [
     ensemble_std: 2,
     ensemble_members: 30,
     actionable: true,
-    platform: 'kalshi'
-  }
+    platform: 'kalshi',
+  },
 ]
 
 describe('EdgeDistribution', () => {

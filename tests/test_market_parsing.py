@@ -9,9 +9,7 @@ from backend.data.weather_markets import (
 
 class WeatherMarketParsingTests(unittest.TestCase):
     def test_parse_title_extracts_city_temperature_metric_direction_and_date(self):
-        parsed = _parse_weather_market_title(
-            "Will Miami's low be below 65°F on September 7, 2026?"
-        )
+        parsed = _parse_weather_market_title("Will Miami's low be below 65°F on September 7, 2026?")
 
         self.assertEqual(parsed["city_key"], "miami")
         self.assertEqual(parsed["metric"], "low")

@@ -1,63 +1,47 @@
-"""Weather data fetcher using Open-Meteo Ensemble API and NWS observations."""
-import httpx
+"""Weather data fetcher using the Open-Meteo Ensemble API."""
+
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta
-from typing import Dict, List, Optional
 import statistics
 import time
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from typing import Dict, List, Optional
+
+import httpx
 
 logger = logging.getLogger("trading_bot")
 
-# City configurations with lat/lon and NWS station identifiers
+# City configurations with forecast coordinates
 CITY_CONFIG: Dict[str, dict] = {
     "nyc": {
         "name": "New York City",
         "lat": 40.7128,
         "lon": -74.0060,
-        "nws_station": "KNYC",
-        "nws_office": "OKX",
-        "nws_gridpoint": "OKX/33,37",
     },
     "chicago": {
         "name": "Chicago",
         "lat": 41.8781,
         "lon": -87.6298,
-        "nws_station": "KORD",
-        "nws_office": "LOT",
-        "nws_gridpoint": "LOT/75,72",
     },
     "miami": {
         "name": "Miami",
         "lat": 25.7617,
         "lon": -80.1918,
-        "nws_station": "KMIA",
-        "nws_office": "MFL",
-        "nws_gridpoint": "MFL/75,53",
     },
     "los_angeles": {
         "name": "Los Angeles",
         "lat": 34.0522,
         "lon": -118.2437,
-        "nws_station": "KLAX",
-        "nws_office": "LOX",
-        "nws_gridpoint": "LOX/154,44",
     },
     "denver": {
         "name": "Denver",
         "lat": 39.7392,
         "lon": -104.9903,
-        "nws_station": "KDEN",
-        "nws_office": "BOU",
-        "nws_gridpoint": "BOU/62,60",
     },
     "boston": {
         "name": "Boston",
         "lat": 42.3656,
         "lon": -71.0096,
-        "nws_station": "KBOS",
-        "nws_office": "BOX",
-        "nws_gridpoint": "BOX/71,101",
     },
 }
 
@@ -65,11 +49,12 @@ CITY_CONFIG: Dict[str, dict] = {
 @dataclass
 class EnsembleForecast:
     """Ensemble weather forecast with per-member data."""
+
     city_key: str
     city_name: str
     target_date: date
     member_highs: List[float]  # Daily max temps (F) per ensemble member
-    member_lows: List[float]   # Daily min temps (F) per ensemble member
+    member_lows: List[float]  # Daily min temps (F) per ensemble member
     mean_high: float = 0.0
     std_high: float = 0.0
     mean_low: float = 0.0
@@ -101,7 +86,7 @@ class EnsembleForecast:
         """Fraction of ensemble members with daily low above threshold."""
         if not self.member_lows:
             return 0.5
-        count = sum(1 for l in self.member_lows if l > threshold_f)
+        count = sum(1 for low in self.member_lows if low > threshold_f)
         return count / len(self.member_lows)
 
     def probability_low_below(self, threshold_f: float) -> float:
@@ -122,10 +107,6 @@ class EnsembleForecast:
 # Simple cache: (city_key, target_date_str) -> (timestamp, EnsembleForecast)
 _forecast_cache: Dict[str, tuple] = {}
 _CACHE_TTL = 900  # 15 minutes
-
-
-def _celsius_to_fahrenheit(c: float) -> float:
-    return c * 9.0 / 5.0 + 32.0
 
 
 async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = None) -> Optional[EnsembleForecast]:
@@ -201,63 +182,14 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
             )
 
             _forecast_cache[cache_key] = (now, forecast)
-            logger.info(f"Ensemble forecast for {city['name']} on {target_date}: "
-                        f"High {forecast.mean_high:.1f}F +/- {forecast.std_high:.1f}F "
-                        f"({forecast.num_members} members)")
+            logger.info(
+                f"Ensemble forecast for {city['name']} on {target_date}: "
+                f"High {forecast.mean_high:.1f}F +/- {forecast.std_high:.1f}F "
+                f"({forecast.num_members} members)"
+            )
 
             return forecast
 
     except Exception as e:
         logger.warning(f"Failed to fetch ensemble forecast for {city_key}: {e}")
-        return None
-
-
-async def fetch_nws_observed_temperature(city_key: str, target_date: Optional[date] = None) -> Optional[Dict[str, float]]:
-    """
-    Fetch observed temperature from NWS API for settlement.
-    Returns dict with 'high' and 'low' in Fahrenheit, or None if not available.
-    """
-    if city_key not in CITY_CONFIG:
-        return None
-
-    city = CITY_CONFIG[city_key]
-    if target_date is None:
-        target_date = date.today()
-
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            # NWS observations endpoint
-            station = city["nws_station"]
-            url = f"https://api.weather.gov/stations/{station}/observations"
-            headers = {"User-Agent": "(trading-bot, contact@example.com)"}
-
-            # Get observations for the target date
-            start = datetime.combine(target_date, datetime.min.time()).isoformat() + "Z"
-            end = datetime.combine(target_date + timedelta(days=1), datetime.min.time()).isoformat() + "Z"
-
-            response = await client.get(url, params={"start": start, "end": end}, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-
-            features = data.get("features", [])
-            if not features:
-                return None
-
-            temps = []
-            for obs in features:
-                props = obs.get("properties", {})
-                temp_c = props.get("temperature", {}).get("value")
-                if temp_c is not None:
-                    temps.append(_celsius_to_fahrenheit(temp_c))
-
-            if not temps:
-                return None
-
-            return {
-                "high": max(temps),
-                "low": min(temps),
-            }
-
-    except Exception as e:
-        logger.warning(f"Failed to fetch NWS observations for {city_key}: {e}")
         return None

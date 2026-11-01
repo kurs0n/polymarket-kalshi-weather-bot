@@ -1,12 +1,14 @@
 """FastAPI backend for weather temperature trading bot dashboard."""
+
+import asyncio
+import logging
+import os
+from contextlib import asynccontextmanager
+from typing import List
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List
-import asyncio
-import os
 
-from backend.config import settings
-from backend.models.database import BotState, SessionLocal, init_db
 from backend.api.routes import (
     bot_router,
     calibration_router,
@@ -16,6 +18,89 @@ from backend.api.routes import (
     trading_router,
     weather_router,
 )
+from backend.config import settings
+from backend.models.database import BotState, SessionLocal, init_db
+
+
+def _initialize_database() -> None:
+    """Create tables and make sure a bot state row exists."""
+    init_db()
+
+    db = SessionLocal()
+    try:
+        state = db.query(BotState).first()
+        if not state:
+            state = BotState(
+                bankroll=settings.INITIAL_BANKROLL,
+                total_trades=0,
+                winning_trades=0,
+                total_pnl=0.0,
+                is_running=True,
+            )
+            db.add(state)
+            db.commit()
+            print(f"Created new bot state with ${settings.INITIAL_BANKROLL:,.2f} bankroll")
+        else:
+            state.is_running = True
+            db.commit()
+            print(
+                f"Loaded bot state: Bankroll ${state.bankroll:,.2f}, "
+                f"P&L ${state.total_pnl:+,.2f}, {state.total_trades} trades"
+            )
+    finally:
+        db.close()
+
+
+def _print_startup_banner() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    print("=" * 60)
+    print("WEATHER TRADING BOT v4.0")
+    print("=" * 60)
+    print("Configuration:")
+    print(f"  - Simulation mode: {settings.SIMULATION_MODE}")
+    print(f"  - Min edge threshold: {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%}")
+    print(f"  - Kelly fraction: {settings.KELLY_FRACTION:.0%}")
+    print(f"  - Scan interval: {settings.WEATHER_SCAN_INTERVAL_SECONDS}s")
+    print(f"  - Settlement interval: {settings.SETTLEMENT_INTERVAL_SECONDS}s")
+    print(f"  - Cities: {settings.WEATHER_CITIES}")
+    print(f"  - Kalshi enabled: {settings.KALSHI_ENABLED}")
+    print(f"  - API key required: {bool(settings.API_KEY)}")
+    print("")
+
+    if not settings.API_KEY:
+        print("WARNING: API_KEY is not set; mutating endpoints are unauthenticated.")
+        print("")
+    print("=" * 60)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Initialize the database and scheduler on startup, stop them on shutdown."""
+    print("Initializing database...")
+    _initialize_database()
+    _print_startup_banner()
+
+    from backend.core.scheduler import log_event, start_scheduler, stop_scheduler
+
+    start_scheduler()
+    log_event("success", "Weather trading bot initialized")
+
+    print("Bot is now running!")
+    print(
+        f"  - Weather scan: every {settings.WEATHER_SCAN_INTERVAL_SECONDS}s "
+        f"(edge >= {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%})"
+    )
+    print(f"  - Settlement check: every {settings.SETTLEMENT_INTERVAL_SECONDS}s")
+    print("=" * 60)
+
+    try:
+        yield
+    finally:
+        stop_scheduler()
+
 
 app = FastAPI(
     title="Weather Trading Bot",
@@ -26,6 +111,7 @@ app = FastAPI(
         "trades, and measure calibration. No live orders are submitted."
     ),
     version="4.0.0",
+    lifespan=lifespan,
     openapi_tags=[
         {"name": "System", "description": "Service health and API information."},
         {"name": "Dashboard", "description": "Aggregated data used by the dashboard."},
@@ -39,7 +125,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origin_list,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -77,65 +163,6 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 
 
-@app.on_event("startup")
-async def startup():
-    print("=" * 60)
-    print("WEATHER TRADING BOT v4.0")
-    print("=" * 60)
-    print("Initializing database...")
-
-    init_db()
-
-    db = SessionLocal()
-    try:
-        state = db.query(BotState).first()
-        if not state:
-            state = BotState(
-                bankroll=settings.INITIAL_BANKROLL,
-                total_trades=0,
-                winning_trades=0,
-                total_pnl=0.0,
-                is_running=True,
-            )
-            db.add(state)
-            db.commit()
-            print(f"Created new bot state with ${settings.INITIAL_BANKROLL:,.2f} bankroll")
-        else:
-            state.is_running = True
-            db.commit()
-            print(f"Loaded bot state: Bankroll ${state.bankroll:,.2f}, P&L ${state.total_pnl:+,.2f}, {state.total_trades} trades")
-    finally:
-        db.close()
-
-    print("")
-    print("Configuration:")
-    print(f"  - Simulation mode: {settings.SIMULATION_MODE}")
-    print(f"  - Min edge threshold: {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%}")
-    print(f"  - Kelly fraction: {settings.KELLY_FRACTION:.0%}")
-    print(f"  - Scan interval: {settings.WEATHER_SCAN_INTERVAL_SECONDS}s")
-    print(f"  - Settlement interval: {settings.SETTLEMENT_INTERVAL_SECONDS}s")
-    print(f"  - Cities: {settings.WEATHER_CITIES}")
-    print(f"  - Kalshi enabled: {settings.KALSHI_ENABLED}")
-    print("")
-
-    from backend.core.scheduler import start_scheduler, log_event
-
-    start_scheduler()
-    log_event("success", "Weather trading bot initialized")
-
-    print("Bot is now running!")
-    print(f"  - Weather scan: every {settings.WEATHER_SCAN_INTERVAL_SECONDS}s (edge >= {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%})")
-    print(f"  - Settlement check: every {settings.SETTLEMENT_INTERVAL_SECONDS}s")
-    print("=" * 60)
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    from backend.core.scheduler import stop_scheduler
-
-    stop_scheduler()
-
-
 @app.websocket("/ws/events")
 async def websocket_events(websocket: WebSocket):
     await ws_manager.connect(websocket)
@@ -143,11 +170,13 @@ async def websocket_events(websocket: WebSocket):
     try:
         from datetime import datetime
 
-        await websocket.send_json({
-            "timestamp": datetime.utcnow().isoformat(),
-            "type": "success",
-            "message": "Connected to weather trading bot",
-        })
+        await websocket.send_json(
+            {
+                "timestamp": datetime.utcnow().isoformat(),
+                "type": "success",
+                "message": "Connected to weather trading bot",
+            }
+        )
 
         from backend.core.scheduler import get_recent_events
 
@@ -165,10 +194,12 @@ async def websocket_events(websocket: WebSocket):
                     await websocket.send_json(event)
                 last_event_count = len(current_events)
 
-            await websocket.send_json({
-                "type": "heartbeat",
-                "timestamp": datetime.utcnow().isoformat(),
-            })
+            await websocket.send_json(
+                {
+                    "type": "heartbeat",
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+            )
 
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)

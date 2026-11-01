@@ -41,7 +41,7 @@ npm install
 npm run dev
 ```
 
-Frontend: http://localhost:5173
+Frontend: http://localhost:3000
 
 ## How It Works
 
@@ -62,30 +62,73 @@ Copy `.env.example` to `.env`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `DATABASE_URL` | `sqlite:///./tradingbot.db` | SQLAlchemy database URL |
+| `SIMULATION_MODE` | `true` | Paper trading only; never places live orders |
+| `INITIAL_BANKROLL` | `10000` | Simulation bankroll |
+| `KELLY_FRACTION` | `0.15` | Fractional Kelly |
+| `MAX_TRADE_SIZE` | `100` | Global per-trade dollar cap |
+| `DAILY_LOSS_LIMIT` | `300` | Daily loss circuit breaker |
+| `MAX_TOTAL_PENDING_TRADES` | `20` | Maximum unsettled trades |
 | `WEATHER_ENABLED` | `true` | Enable weather scanning |
 | `WEATHER_CITIES` | `nyc,chicago,miami,los_angeles,denver,boston` | Cities to trade |
 | `WEATHER_MIN_EDGE_THRESHOLD` | `0.08` | Minimum edge (8%) |
 | `WEATHER_MAX_ENTRY_PRICE` | `0.70` | Max entry price |
-| `WEATHER_MAX_TRADE_SIZE` | `100` | Max $ per trade |
+| `WEATHER_MAX_TRADE_SIZE` | `100` | Max $ per weather trade |
 | `WEATHER_SCAN_INTERVAL_SECONDS` | `300` | Scan every 5 min |
+| `SETTLEMENT_INTERVAL_SECONDS` | `1800` | Settlement check every 30 min |
 | `KALSHI_ENABLED` | `true` | Include Kalshi markets |
 | `KALSHI_API_KEY_ID` | — | Kalshi API key ID |
 | `KALSHI_PRIVATE_KEY_PATH` | — | Path to RSA private key |
-| `INITIAL_BANKROLL` | `10000` | Simulation bankroll |
-| `KELLY_FRACTION` | `0.15` | Fractional Kelly |
+| `POLYMARKET_API_KEY` | — | Optional Polymarket key |
+| `API_KEY` | — | When set, mutating endpoints require `X-API-Key` |
+| `CORS_ORIGINS` | `*` | Comma-separated allowed browser origins |
+
+When `API_KEY` is unset the mutating endpoints stay open for local development; the backend logs a startup warning about this. The frontend reads the matching value from `VITE_API_KEY`.
 
 ## API Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
+| `GET /` | Service root and simulation-mode indicator |
+| `GET /api/health` | Health check |
 | `GET /api/dashboard` | Full dashboard payload |
+| `GET /api/stats` | Bankroll and P&L statistics |
+| `GET /api/trades` | Simulated trades |
+| `GET /api/equity-curve` | Equity curve points |
+| `GET /api/calibration` | Calibration buckets and summary |
+| `GET /api/events` | Recent scheduler events |
 | `GET /api/weather/forecasts` | Ensemble forecasts by city |
 | `GET /api/weather/markets` | Active weather markets |
 | `GET /api/weather/signals` | Current weather signals |
-| `POST /api/run-scan` | Manual weather scan |
-| `POST /api/settle-trades` | Settle resolved trades |
-| `POST /api/bot/start` / `stop` | Control scheduler |
 | `GET /api/kalshi/status` | Kalshi auth check |
+| `POST /api/run-scan` | Manual weather scan |
+| `POST /api/simulate-trade` | Create a paper trade from a signal |
+| `POST /api/settle-trades` | Settle resolved trades |
+| `POST /api/bot/start` / `stop` / `reset` | Control the scheduler and reset state |
+| `WS /ws/events` | Streaming scheduler events |
+
+Endpoints marked `POST` require `X-API-Key` when `API_KEY` is configured.
+
+## Development
+
+```bash
+# Backend lint and format
+pip install -r requirements-dev.txt
+ruff check backend tests run.py
+ruff format backend tests run.py
+
+# Backend tests
+python -m unittest discover -s tests
+
+# Frontend lint, format, tests, build
+cd frontend
+npm run lint
+npm run format:check
+npm test
+npm run build
+```
+
+`./run_tests.sh` runs the backend and frontend suites together. CI mirrors these checks in `.github/workflows/ci.yml`.
 
 ## License
 

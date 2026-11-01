@@ -74,8 +74,6 @@ The forecast stores:
 
 Forecasts are cached per city and target date for 15 minutes. The model probability is the fraction of members above or below the contract threshold. Extreme probabilities are clipped to `5%` and `95%` before signal generation.
 
-NWS station observations are fetched during settlement support for configured cities. The current market settlement path uses the platform's resolution API: Polymarket Gamma resolution data or Kalshi finalized market results.
-
 ## Signal Generation
 
 For each parsed weather market:
@@ -115,4 +113,12 @@ The scheduler records trades in SQLite through SQLAlchemy. It does not place liv
 
 Signals record model probability, market price, edge, confidence, suggested size, source, and reasoning. Settled outcomes update signal correctness, trade results, P&L, bankroll, and dashboard calibration statistics.
 
-The FastAPI service exposes dashboard, forecast, market, signal, scan, trade settlement, bot-control, and Kalshi-status endpoints. The React frontend consumes these endpoints to display forecasts, signals, trades, equity, calibration, and scheduler events.
+The FastAPI service exposes dashboard, forecast, market, signal, scan, trade settlement, bot-control, calibration, and Kalshi-status endpoints. The React frontend consumes these endpoints to display forecasts, signals, trades, equity, calibration, and scheduler events.
+
+## API Layering
+
+- `backend/api/main.py` builds the app, configures CORS from `CORS_ORIGINS`, installs the `lifespan` startup/shutdown hooks, and serves the `/ws/events` websocket.
+- `backend/api/routes/` owns the HTTP routes; `backend/api/schemas.py` owns the Pydantic request/response models that define the API contract.
+- `backend/api/deps.py` holds shared dependencies. `require_api_key` enforces the `X-API-Key` header on mutating endpoints when `API_KEY` is configured, and allows requests through when it is unset.
+
+The frontend client in `frontend/src/api.ts` mirrors the same contract and sends `VITE_API_KEY` when configured.

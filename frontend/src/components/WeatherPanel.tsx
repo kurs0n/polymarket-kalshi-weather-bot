@@ -26,7 +26,7 @@ export function WeatherPanel({ forecasts, signals }: Props) {
   }
 
   const signalsByCity = new Map<string, WeatherSignal[]>()
-  signals.forEach(s => {
+  signals.forEach((s) => {
     const existing = signalsByCity.get(s.city_key) || []
     existing.push(s)
     signalsByCity.set(s.city_key, existing)
@@ -34,18 +34,21 @@ export function WeatherPanel({ forecasts, signals }: Props) {
 
   return (
     <div className="space-y-1 overflow-y-auto max-h-full">
-      {forecasts.map(f => {
+      {forecasts.map((f) => {
         const citySignals = signalsByCity.get(f.city_key) || []
-        const actionable = citySignals.filter(s => s.actionable)
-        const bestEdge = citySignals.length > 0
-          ? citySignals.reduce((a, b) => Math.abs(a.edge) > Math.abs(b.edge) ? a : b)
-          : null
+        const actionable = citySignals.filter((s) => s.actionable)
+        const bestEdge =
+          citySignals.length > 0
+            ? citySignals.reduce((a, b) => (Math.abs(a.edge) > Math.abs(b.edge) ? a : b))
+            : null
 
         return (
           <div
             key={f.city_key}
             className={`flex items-center gap-2 px-2 py-1.5 ${
-              actionable.length > 0 ? 'border-l-2 border-l-green-500 bg-green-500/5' : 'border-l-2 border-l-transparent'
+              actionable.length > 0
+                ? 'border-l-2 border-l-green-500 bg-green-500/5'
+                : 'border-l-2 border-l-transparent'
             }`}
           >
             <div className="w-12 shrink-0">
@@ -63,14 +66,20 @@ export function WeatherPanel({ forecasts, signals }: Props) {
             </div>
             <div className="flex items-center gap-1 shrink-0">
               {bestEdge && (
-                <span className={`text-[10px] tabular-nums ${bestEdge.edge > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                  {bestEdge.edge > 0 ? '+' : ''}{(bestEdge.edge * 100).toFixed(1)}%
+                <span
+                  className={`text-[10px] tabular-nums ${bestEdge.edge > 0 ? 'text-green-500' : 'text-red-500'}`}
+                >
+                  {bestEdge.edge > 0 ? '+' : ''}
+                  {(bestEdge.edge * 100).toFixed(1)}%
                 </span>
               )}
               {citySignals.length > 0 && citySignals[0].platform && (
-                <span className={`platform-badge ${
-                  platformStyles[citySignals[0].platform.toLowerCase()]?.badge || 'bg-neutral-800 text-neutral-400 border-neutral-700'
-                }`}>
+                <span
+                  className={`platform-badge ${
+                    platformStyles[citySignals[0].platform.toLowerCase()]?.badge ||
+                    'bg-neutral-800 text-neutral-400 border-neutral-700'
+                  }`}
+                >
                   {platformStyles[citySignals[0].platform.toLowerCase()]?.icon || '?'}
                 </span>
               )}

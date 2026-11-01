@@ -25,8 +25,9 @@ class SizingTests(unittest.TestCase):
             self.assertEqual(calculate_kelly_size(0.1, 0.50, 1.0, Outcome.YES, 1000), 0)
 
     def test_kelly_size_respects_fractional_kelly_and_trade_cap(self):
-        with patch("backend.core.sizing.settings.KELLY_FRACTION", 1.0), patch(
-            "backend.core.sizing.settings.MAX_TRADE_SIZE", 100.0
+        with (
+            patch("backend.core.sizing.settings.KELLY_FRACTION", 1.0),
+            patch("backend.core.sizing.settings.MAX_TRADE_SIZE", 100.0),
         ):
             size = calculate_kelly_size(0.8, 0.95, 0.50, Outcome.YES, 10000)
 

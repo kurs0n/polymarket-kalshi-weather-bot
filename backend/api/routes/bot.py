@@ -1,15 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from backend.config import settings
+from backend.api.deps import require_api_key
 from backend.api.schemas import ActionResponse, ResetResponse
-from backend.models.database import AILog, BotState, Trade, get_db
+from backend.config import settings
+from backend.models.database import BotState, Trade, get_db
 
 router = APIRouter()
 
 
 @router.post(
     "/api/bot/start",
+    dependencies=[Depends(require_api_key)],
     response_model=ActionResponse,
     tags=["Bot"],
     summary="Start the bot scheduler",
@@ -32,6 +34,7 @@ async def start_bot(db: Session = Depends(get_db)):
 
 @router.post(
     "/api/bot/stop",
+    dependencies=[Depends(require_api_key)],
     response_model=ActionResponse,
     tags=["Bot"],
     summary="Stop the bot scheduler",
@@ -51,10 +54,11 @@ async def stop_bot(db: Session = Depends(get_db)):
 
 @router.post(
     "/api/bot/reset",
+    dependencies=[Depends(require_api_key)],
     response_model=ResetResponse,
     tags=["Bot"],
     summary="Reset simulated bot state",
-    description="Delete simulated trades and AI logs, then restore the configured initial bankroll.",
+    description="Delete simulated trades, then restore the configured initial bankroll.",
     responses={500: {"description": "The database transaction could not be completed."}},
 )
 async def reset_bot(db: Session = Depends(get_db)):
@@ -70,18 +74,18 @@ async def reset_bot(db: Session = Depends(get_db)):
             state.total_pnl = 0.0
             state.is_running = True
 
-        ai_logs_deleted = db.query(AILog).delete()
         db.commit()
 
-        log_event("success", f"Bot reset: {trades_deleted} trades deleted. Fresh start with ${settings.INITIAL_BANKROLL:,.2f}")
+        log_event(
+            "success", f"Bot reset: {trades_deleted} trades deleted. Fresh start with ${settings.INITIAL_BANKROLL:,.2f}"
+        )
 
         return {
             "status": "reset",
             "trades_deleted": trades_deleted,
-            "ai_logs_deleted": ai_logs_deleted,
             "new_bankroll": settings.INITIAL_BANKROLL,
         }
 
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Reset failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Reset failed: {e}") from e

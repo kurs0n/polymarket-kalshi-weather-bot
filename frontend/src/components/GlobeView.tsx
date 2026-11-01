@@ -1,5 +1,5 @@
 import { useEffect, useRef, useMemo, useCallback } from 'react'
-import Globe from 'react-globe.gl'
+import Globe, { type GlobeMethods } from 'react-globe.gl'
 import type { WeatherForecast, WeatherSignal } from '../types'
 
 interface Props {
@@ -27,18 +27,19 @@ const CITIES: Record<string, { lat: number; lng: number; name: string }> = {
 }
 
 export function GlobeView({ forecasts, signals }: Props) {
-  const globeRef = useRef<any>(null)
+  const globeRef = useRef<GlobeMethods | undefined>(undefined)
 
   const markers: CityMarker[] = useMemo(() => {
     return Object.entries(CITIES).map(([key, city]) => {
-      const forecast = forecasts.find(f => f.city_key === key) || null
-      const citySignals = signals.filter(s => s.city_key === key)
-      const actionableSignals = citySignals.filter(s => s.actionable)
-      const bestSignal = actionableSignals.length > 0
-        ? actionableSignals.reduce((a, b) => Math.abs(a.edge) > Math.abs(b.edge) ? a : b)
-        : citySignals.length > 0
-          ? citySignals.reduce((a, b) => Math.abs(a.edge) > Math.abs(b.edge) ? a : b)
-          : null
+      const forecast = forecasts.find((f) => f.city_key === key) || null
+      const citySignals = signals.filter((s) => s.city_key === key)
+      const actionableSignals = citySignals.filter((s) => s.actionable)
+      const bestSignal =
+        actionableSignals.length > 0
+          ? actionableSignals.reduce((a, b) => (Math.abs(a.edge) > Math.abs(b.edge) ? a : b))
+          : citySignals.length > 0
+            ? citySignals.reduce((a, b) => (Math.abs(a.edge) > Math.abs(b.edge) ? a : b))
+            : null
 
       return {
         lat: city.lat,
