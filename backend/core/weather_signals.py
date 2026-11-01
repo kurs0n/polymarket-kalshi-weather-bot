@@ -1,4 +1,5 @@
 """Signal generator for weather temperature markets using ensemble forecasts."""
+
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -6,7 +7,7 @@ from typing import List, Optional
 
 from backend.config import settings
 from backend.core.sizing import calculate_edge, calculate_kelly_size
-from backend.data.weather import fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG
+from backend.data.weather import fetch_ensemble_forecast
 from backend.data.weather_markets import WeatherMarket, fetch_polymarket_weather_markets
 from backend.models.database import BotState, SessionLocal, Signal
 from backend.models.outcomes import Outcome
@@ -32,10 +33,11 @@ def _get_current_bankroll() -> float:
 @dataclass
 class WeatherTradingSignal:
     """A trading signal for a weather temperature market."""
+
     market: WeatherMarket
 
     # Core signal data
-    model_probability: float = 0.5   # Ensemble probability of YES outcome
+    model_probability: float = 0.5  # Ensemble probability of YES outcome
     market_probability: float = 0.5  # Market's implied YES probability
     edge: float = 0.0
     direction: Outcome = Outcome.YES
@@ -182,6 +184,7 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
         try:
             from backend.data.kalshi_client import kalshi_credentials_present
             from backend.data.kalshi_markets import fetch_kalshi_weather_markets
+
             if kalshi_credentials_present():
                 kalshi_markets = await fetch_kalshi_weather_markets(city_keys)
                 markets.extend(kalshi_markets)
@@ -206,8 +209,10 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
     logger.info(f"WEATHER SCAN COMPLETE: {len(signals)} signals, {len(actionable)} actionable")
 
     for signal in actionable[:5]:
-        logger.info(f"  {signal.market.city_name}: {signal.market.metric} {signal.market.direction} "
-                     f"{signal.market.threshold_f:.0f}F | Edge: {signal.edge:+.1%}")
+        logger.info(
+            f"  {signal.market.city_name}: {signal.market.metric} {signal.market.direction} "
+            f"{signal.market.threshold_f:.0f}F | Edge: {signal.edge:+.1%}"
+        )
 
     # Persist signals to DB
     _persist_weather_signals(signals)
@@ -225,10 +230,14 @@ def _persist_weather_signals(signals: list):
     try:
         for signal in to_save:
             # Dedup: skip if already logged for this market
-            existing = db.query(Signal).filter(
-                Signal.market_ticker == signal.market.market_id,
-                Signal.timestamp >= signal.timestamp.replace(second=0, microsecond=0),
-            ).first()
+            existing = (
+                db.query(Signal)
+                .filter(
+                    Signal.market_ticker == signal.market.market_id,
+                    Signal.timestamp >= signal.timestamp.replace(second=0, microsecond=0),
+                )
+                .first()
+            )
             if existing:
                 continue
 

@@ -11,7 +11,7 @@ describe('CalibrationPanel', () => {
       accuracy: 0.64,
       avg_predicted_edge: 0.12,
       avg_actual_edge: 0.08,
-      brier_score: 0.18
+      brier_score: 0.18,
     }
 
     render(<CalibrationPanel calibration={calibration} />)

@@ -1,4 +1,5 @@
 """Configuration settings for the weather trading bot."""
+
 from typing import Optional
 
 from pydantic import field_validator
@@ -11,8 +12,13 @@ class Settings(BaseSettings):
     # Database (SQLite for Phase 1, PostgreSQL for production)
     DATABASE_URL: str = "sqlite:///./tradingbot.db"
 
-    # API Keys (optional)
+    # API keys (optional)
     POLYMARKET_API_KEY: Optional[str] = None
+
+    # Dashboard/API access control. When set, mutating endpoints require the
+    # X-API-Key header. Leave unset for local development.
+    API_KEY: Optional[str] = None
+    CORS_ORIGINS: str = "*"
 
     # Kalshi API
     KALSHI_API_KEY_ID: Optional[str] = None
@@ -80,6 +86,11 @@ class Settings(BaseSettings):
     def weather_city_list(self) -> list[str]:
         """Return configured weather cities in normalized form."""
         return self.WEATHER_CITIES.split(",")
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """Return configured CORS origins in normalized form."""
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
 
 settings = Settings()

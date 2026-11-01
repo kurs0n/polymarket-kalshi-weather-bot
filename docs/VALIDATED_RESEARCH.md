@@ -25,14 +25,14 @@ The forecast cache is keyed by city and date and expires after 15 minutes.
 
 The configured city map contains:
 
-| Key | City | NWS station |
-|-----|------|-------------|
-| `nyc` | New York City | `KNYC` |
-| `chicago` | Chicago | `KORD` |
-| `miami` | Miami | `KMIA` |
-| `los_angeles` | Los Angeles | `KLAX` |
-| `denver` | Denver | `KDEN` |
-| `boston` | Boston | `KBOS` |
+| Key | City |
+|-----|------|
+| `nyc` | New York City |
+| `chicago` | Chicago |
+| `miami` | Miami |
+| `los_angeles` | Los Angeles |
+| `denver` | Denver |
+| `boston` | Boston |
 
 The default `WEATHER_CITIES` value enables all six cities.
 
@@ -126,11 +126,9 @@ These items are not implemented or fully verified on `main`:
 1. Live Polymarket order placement.
 2. Additional forecast models beyond Open-Meteo `gfs_seamless`.
 3. Separate Kalshi low-temperature markets.
-4. Additional forecast models beyond the current Open-Meteo integration.
 
 ## References
 
 - [Open-Meteo Ensemble API](https://open-meteo.com/en/docs/ensemble-api)
-- [NWS API Documentation](https://www.weather.gov/documentation/services-web-api)
 - [Kalshi API Documentation](https://docs.kalshi.com/welcome)
 - [Polymarket API Endpoints](https://docs.polymarket.com/quickstart/reference/endpoints)

@@ -10,7 +10,9 @@ router = APIRouter()
     response_model=KalshiStatusResponse,
     tags=["Integrations"],
     summary="Check Kalshi connectivity",
-    description="Report whether Kalshi credentials are configured and whether an authenticated balance request succeeds.",
+    description=(
+        "Report whether Kalshi credentials are configured and whether an " "authenticated balance request succeeds."
+    ),
 )
 async def get_kalshi_status():
     """Test Kalshi API authentication and return connection status."""

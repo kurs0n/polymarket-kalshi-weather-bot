@@ -7,11 +7,11 @@ description: 'Use when changing or debugging the Python backend, FastAPI routes,
 
 ## Architecture Map
 
-- `backend/api/main.py` owns the FastAPI app, startup/shutdown hooks, dashboard routes, and API response models.
+- `backend/api/main.py` owns the FastAPI app, lifespan hooks, CORS, and the `/ws/events` websocket. Routes and response models live in `backend/api/routes/` and `backend/api/schemas.py`; `backend/api/deps.py` holds shared dependencies such as API-key enforcement.
 - `backend/core/scheduler.py` runs periodic scans and settlement jobs. It enforces trade limits and persists simulated trades.
 - `backend/core/weather_signals.py` coordinates market discovery, forecasts, edge/confidence calculation, signal persistence, and sizing.
 - `backend/core/sizing.py` owns shared edge and fractional-Kelly calculations; `backend/core/settlement.py` resolves outcomes and updates P&L/calibration.
-- `backend/data/` contains Polymarket Gamma, optional Kalshi, Open-Meteo ensemble, and NWS data access and parsing.
+- `backend/data/` contains Polymarket Gamma, optional Kalshi, and Open-Meteo ensemble data access and parsing.
 - `backend/models/database.py` defines SQLAlchemy models, engine/session setup, and schema initialization. `backend/config.py` loads validated environment settings with Pydantic Settings.
 
 See [the architecture guide](../../../docs/ARCHITECTURE.md) for the runtime flow, market sources, signal semantics, and risk controls.
@@ -30,4 +30,5 @@ See [the architecture guide](../../../docs/ARCHITECTURE.md) for the runtime flow
 
 - Run the focused test module for the changed behavior, for example `python -m unittest discover -s tests -p 'test_sizing.py'`.
 - Run the full backend suite with `python -m unittest discover -s tests` (also exposed by `./run_tests.sh`).
+- Run `ruff check backend tests run.py` and `ruff format --check backend tests run.py`; both are enforced in CI.
 - For API/schema changes, verify response models and the frontend contract in `frontend/src/types.ts` and `frontend/src/api.ts`.

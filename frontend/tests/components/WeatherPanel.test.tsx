@@ -21,8 +21,8 @@ describe('WeatherPanel', () => {
         mean_low: 68,
         std_low: 5,
         num_members: 30,
-        ensemble_agreement: 0.81
-      }
+        ensemble_agreement: 0.81,
+      },
     ]
 
     const signals: WeatherSignal[] = [
@@ -44,8 +44,8 @@ describe('WeatherPanel', () => {
         ensemble_std: 5,
         ensemble_members: 30,
         actionable: true,
-        platform: 'kalshi'
-      }
+        platform: 'kalshi',
+      },
     ]
 
     render(<WeatherPanel forecasts={forecasts} signals={signals} />)

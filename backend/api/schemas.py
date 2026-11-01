@@ -1,8 +1,9 @@
 """Pydantic schemas for the weather trading bot API."""
+
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TradeResponse(BaseModel):
@@ -74,6 +75,8 @@ class WeatherMarketResponse(BaseModel):
 
 
 class WeatherSignalResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     market_id: str = Field(description="Market identifier used by simulate-trade.")
     city_key: str = Field(description="Configured city key.")
     city_name: str = Field(description="Human-readable city name.")
@@ -98,7 +101,9 @@ class EquityPoint(BaseModel):
     timestamp: str = Field(description="UTC timestamp of the settled trade.")
     pnl: float = Field(description="Cumulative realized P&L in USD at this point.")
     bankroll: float = Field(description="Simulated bankroll in USD at this point.")
-    trade_id: Optional[int] = Field(default=None, description="Settled trade identifier, when returned by the equity-curve endpoint.")
+    trade_id: Optional[int] = Field(
+        default=None, description="Settled trade identifier, when returned by the equity-curve endpoint."
+    )
 
 
 class DashboardData(BaseModel):
@@ -161,7 +166,6 @@ class SettlementResponse(BaseModel):
 class ResetResponse(BaseModel):
     status: str
     trades_deleted: int
-    ai_logs_deleted: int
     new_bankroll: float
 
 

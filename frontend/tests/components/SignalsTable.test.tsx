@@ -23,7 +23,7 @@ const signals: WeatherSignal[] = [
     ensemble_std: 3,
     ensemble_members: 30,
     actionable: true,
-    platform: 'kalshi'
+    platform: 'kalshi',
   },
   {
     market_id: 'DENVER-HIGH-65',
@@ -43,8 +43,8 @@ const signals: WeatherSignal[] = [
     ensemble_std: 4,
     ensemble_members: 30,
     actionable: true,
-    platform: 'kalshi'
-  }
+    platform: 'kalshi',
+  },
 ]
 
 describe('SignalsTable', () => {

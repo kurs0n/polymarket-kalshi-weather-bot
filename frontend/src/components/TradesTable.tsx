@@ -34,17 +34,22 @@ export function TradesTable({ trades }: Props) {
           bVal = new Date(b.timestamp).getTime()
           break
         case 'size':
-          aVal = a.size; bVal = b.size; break
+          aVal = a.size
+          bVal = b.size
+          break
         case 'pnl':
-          aVal = a.pnl ?? 0; bVal = b.pnl ?? 0; break
+          aVal = a.pnl ?? 0
+          bVal = b.pnl ?? 0
+          break
         case 'result':
-          aVal = a.result; bVal = b.result; break
-        default: return 0
+          aVal = a.result
+          bVal = b.result
+          break
+        default:
+          return 0
       }
       if (typeof aVal === 'string') {
-        return sortDir === 'asc'
-          ? aVal.localeCompare(bVal as string)
-          : (bVal as string).localeCompare(aVal)
+        return sortDir === 'asc' ? aVal.localeCompare(bVal as string) : (bVal as string).localeCompare(aVal)
       }
       return sortDir === 'asc' ? aVal - (bVal as number) : (bVal as number) - aVal
     })
@@ -52,9 +57,11 @@ export function TradesTable({ trades }: Props) {
 
   const SortIcon = ({ column }: { column: SortKey }) => {
     if (sortKey !== column) return <ArrowUpDown className="w-2.5 h-2.5 text-neutral-600" />
-    return sortDir === 'asc'
-      ? <ArrowUp className="w-2.5 h-2.5 text-amber-500" />
-      : <ArrowDown className="w-2.5 h-2.5 text-amber-500" />
+    return sortDir === 'asc' ? (
+      <ArrowUp className="w-2.5 h-2.5 text-amber-500" />
+    ) : (
+      <ArrowDown className="w-2.5 h-2.5 text-amber-500" />
+    )
   }
 
   if (trades.length === 0) {
@@ -124,26 +131,29 @@ export function TradesTable({ trades }: Props) {
                 className="border-b border-neutral-800/50 hover:bg-neutral-800/30 text-[11px]"
               >
                 <td className="py-1 px-1.5">
-                  {style && (
-                    <span className={`platform-badge ${style.badge}`}>
-                      {style.icon}
-                    </span>
-                  )}
+                  {style && <span className={`platform-badge ${style.badge}`}>{style.icon}</span>}
                 </td>
                 <td className="py-1 px-1.5">
-                  <span className={`text-[9px] font-medium uppercase ${
-                    isPending ? 'text-amber-500' : isWin ? 'text-green-500' : 'text-red-500'
-                  }`}>
+                  <span
+                    className={`text-[9px] font-medium uppercase ${
+                      isPending ? 'text-amber-500' : isWin ? 'text-green-500' : 'text-red-500'
+                    }`}
+                  >
                     {isPending ? 'PND' : isWin ? 'WIN' : 'LOSS'}
                   </span>
                 </td>
                 <td className="py-1 px-1.5">
-                  <span className="text-neutral-400 truncate block max-w-[100px]" title={trade.event_slug || trade.market_ticker}>
+                  <span
+                    className="text-neutral-400 truncate block max-w-[100px]"
+                    title={trade.event_slug || trade.market_ticker}
+                  >
                     {trade.event_slug || trade.market_ticker}
                   </span>
                 </td>
                 <td className="py-1 px-1.5 text-center">
-                  <span className={`text-[10px] font-semibold uppercase ${isYes ? 'text-green-500' : 'text-red-500'}`}>
+                  <span
+                    className={`text-[10px] font-semibold uppercase ${isYes ? 'text-green-500' : 'text-red-500'}`}
+                  >
                     {trade.direction}
                   </span>
                 </td>
@@ -152,9 +162,11 @@ export function TradesTable({ trades }: Props) {
                 </td>
                 <td className="py-1 px-1.5 text-right">
                   {trade.pnl !== null ? (
-                    <span className={`font-semibold tabular-nums ${
-                      trade.pnl >= 0 ? 'text-green-500' : 'text-red-500'
-                    }`}>
+                    <span
+                      className={`font-semibold tabular-nums ${
+                        trade.pnl >= 0 ? 'text-green-500' : 'text-red-500'
+                      }`}
+                    >
                       {trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(0)}
                     </span>
                   ) : (

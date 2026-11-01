@@ -1,4 +1,4 @@
-# Backend
+# Backend runtime dependencies
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 sqlalchemy==2.0.25
@@ -8,26 +8,12 @@ pydantic-settings==2.1.0
 
 # Data fetching
 httpx==0.26.0
-aiohttp==3.9.1
 
 # Kalshi API auth (RSA-PSS signatures)
 cryptography>=42.0.0
 
-# Weather data (using Open-Meteo API)
-numpy==1.26.3
-pandas==2.1.4
-scipy==1.12.0
-
 # Scheduling
 apscheduler==3.10.4
 
-# AI / LLM
-anthropic>=0.40.0
-groq>=0.4.0
-
-# Logging
-structlog>=24.1.0
-
-# Utils
+# Environment loading (required by pydantic-settings' env_file support)
 python-dotenv==1.0.0
-orjson==3.9.10

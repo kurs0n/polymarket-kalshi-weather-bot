@@ -6,13 +6,16 @@ import type { EquityPoint } from '../../src/types'
 
 vi.mock('recharts', () => ({
   ResponsiveContainer: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  AreaChart: ({ data, children }: {
+  AreaChart: ({
+    data,
+    children,
+  }: {
     data: Array<{ timestamp: string; pnl: number; bankroll: number }>
     children: ReactNode
   }) => (
     <div>
       <div data-testid="equity-points">
-        {data.map(point => `${point.timestamp}: ${point.pnl}`).join(', ')}
+        {data.map((point) => `${point.timestamp}: ${point.pnl}`).join(', ')}
       </div>
       {Array.isArray(children) ? children[children.length - 1] : null}
     </div>
@@ -22,12 +25,12 @@ vi.mock('recharts', () => ({
   YAxis: () => null,
   CartesianGrid: () => null,
   Tooltip: () => null,
-  ReferenceLine: () => null
+  ReferenceLine: () => null,
 }))
 
 const equityData: EquityPoint[] = [
   { timestamp: '2026-09-27T12:00:00Z', pnl: 125, bankroll: 10125 },
-  { timestamp: '2026-09-28T12:00:00Z', pnl: -30, bankroll: 9970 }
+  { timestamp: '2026-09-28T12:00:00Z', pnl: -30, bankroll: 9970 },
 ]
 
 describe('EquityChart', () => {

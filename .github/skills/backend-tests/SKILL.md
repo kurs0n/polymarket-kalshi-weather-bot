@@ -16,11 +16,14 @@ Current coverage is organized by behavior:
 - `test_weather_forecast.py`: ensemble summaries and threshold probabilities.
 - `test_sizing.py` and `test_weather_bankroll_sizing.py`: edge/Kelly sizing and bankroll-dependent signal sizing.
 - `test_settlement.py`: trade settlement and P&L behavior.
+- `test_kalshi_parsing.py`: Kalshi bracket ticker parsing.
+- `test_calibration.py`: calibration summary math against an in-memory SQLite session.
+- `test_api.py`: FastAPI contract tests and API-key enforcement using an in-memory database and no scheduler lifespan.
 
 ## Workflow
 
 1. Locate the owning implementation under `backend/config.py`, `backend/core/`, `backend/data/`, or `backend/models/`; write the test at the behavior boundary rather than duplicating implementation details.
-2. Follow existing `unittest.TestCase` conventions. Use `unittest.mock` to replace network clients, database sessions, clocks, and provider dependencies; tests should not call Polymarket, Kalshi, Open-Meteo, or NWS.
+2. Follow existing `unittest.TestCase` conventions. Use `unittest.mock` to replace network clients, database sessions, clocks, and provider dependencies; tests should not call Polymarket, Kalshi, or Open-Meteo.
 3. Keep cases deterministic. Market parsing filters dates against the current day, so use dates relative to `date.today()` or control the date in the module under test rather than hard-coding a date that will expire.
 4. For async functions, use the established `asyncio.run(...)` pattern in synchronous test cases unless the test suite adopts a different runner.
 5. Cover meaningful boundaries: invalid/missing provider data, YES/NO outcomes, threshold equality, zero or capped sizes, unresolved markets, and database/session cleanup where applicable.
@@ -40,4 +43,4 @@ Run one test file with discovery, for example:
 python -m unittest discover -s tests -p 'test_sizing.py'
 ```
 
-`./run_tests.sh` is the repository wrapper for the full suite. Report failures accurately; do not change unrelated tests or implementation just to make the suite green. For API/schema changes, check that route response models and frontend TypeScript contracts remain compatible.
+`./run_tests.sh` is the repository wrapper for the full backend and frontend suites. CI also runs `ruff check` and `ruff format --check`. Report failures accurately; do not change unrelated tests or implementation just to make the suite green. For API/schema changes, check that route response models and frontend TypeScript contracts remain compatible.

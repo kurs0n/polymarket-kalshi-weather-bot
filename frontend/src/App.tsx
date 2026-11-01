@@ -11,7 +11,7 @@ import { CalibrationPanel } from './components/CalibrationPanel'
 import { WeatherPanel } from './components/WeatherPanel'
 import { EdgeDistribution } from './components/EdgeDistribution'
 
-const GlobeView = lazy(() => import('./components/GlobeView').then(m => ({ default: m.GlobeView })))
+const GlobeView = lazy(() => import('./components/GlobeView').then((m) => ({ default: m.GlobeView })))
 
 function LiveClock() {
   const [time, setTime] = useState(new Date())
@@ -33,7 +33,7 @@ function RefreshBar({ interval }: { interval: number }) {
     setProgress(100)
     const step = 100 / (interval / 1000)
     const timer = setInterval(() => {
-      setProgress(p => Math.max(0, p - step))
+      setProgress((p) => Math.max(0, p - step))
     }, 1000)
     return () => clearInterval(timer)
   }, [interval])
@@ -85,12 +85,12 @@ function App() {
     total_pnl: 0,
     bankroll: 10000,
     winning_trades: 0,
-    win_rate: 0
+    win_rate: 0,
   }
   const equityCurve = data?.equity_curve ?? []
   const calibration = data?.calibration ?? null
 
-  const actionableCount = weatherSignals.filter(s => s.actionable).length
+  const actionableCount = weatherSignals.filter((s) => s.actionable).length
 
   if (isLoading) {
     return (
@@ -136,11 +136,13 @@ function App() {
           <h1 className="text-xs font-bold text-neutral-100 uppercase tracking-widest whitespace-nowrap font-mono">
             WEATHER TERMINAL
           </h1>
-          <span className={`px-1.5 py-0.5 text-[9px] font-bold uppercase ${
-            stats.is_running
-              ? 'bg-green-500/10 text-green-500 border border-green-500/20'
-              : 'bg-neutral-800 text-neutral-500 border border-neutral-700'
-          }`}>
+          <span
+            className={`px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+              stats.is_running
+                ? 'bg-green-500/10 text-green-500 border border-green-500/20'
+                : 'bg-neutral-800 text-neutral-500 border border-neutral-700'
+            }`}
+          >
             {stats.is_running ? 'Live' : 'Idle'}
           </span>
           <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase bg-amber-500/10 text-amber-400 border border-amber-500/20">
@@ -166,14 +168,15 @@ function App() {
 
       {/* ===== MAIN GRID ===== */}
       <div className="flex-1 min-h-0 grid grid-cols-[300px_1fr_340px] grid-rows-[1fr] gap-0">
-
         {/* ===== LEFT COLUMN ===== */}
         <div className="flex flex-col border-r border-neutral-800 min-h-0 overflow-hidden">
           {/* Equity chart */}
           <div className="border-b border-neutral-800" style={{ height: '28%', minHeight: '120px' }}>
             <div className="px-2 py-1 border-b border-neutral-800 flex items-center justify-between shrink-0">
               <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Equity</span>
-              <span className={`text-[10px] tabular-nums ${stats.total_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+              <span
+                className={`text-[10px] tabular-nums ${stats.total_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}
+              >
                 {stats.total_pnl >= 0 ? '+' : ''}${stats.total_pnl.toFixed(0)}
               </span>
             </div>
@@ -191,7 +194,9 @@ function App() {
             >
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Calibration</span>
-                <span className="text-[9px] text-neutral-600 tabular-nums">{calibration.total_with_outcome} settled</span>
+                <span className="text-[9px] text-neutral-600 tabular-nums">
+                  {calibration.total_with_outcome} settled
+                </span>
               </div>
               <CalibrationPanel calibration={calibration} />
             </motion.div>
@@ -215,11 +220,15 @@ function App() {
           {/* Globe - top 60% */}
           <div className="relative" style={{ height: '58%' }}>
             <div className="absolute inset-0">
-              <Suspense fallback={
-                <div className="w-full h-full flex items-center justify-center bg-black">
-                  <span className="text-[10px] text-neutral-600 uppercase tracking-wider">Loading Globe...</span>
-                </div>
-              }>
+              <Suspense
+                fallback={
+                  <div className="w-full h-full flex items-center justify-center bg-black">
+                    <span className="text-[10px] text-neutral-600 uppercase tracking-wider">
+                      Loading Globe...
+                    </span>
+                  </div>
+                }
+              >
                 <GlobeView forecasts={weatherForecasts} signals={weatherSignals} />
               </Suspense>
             </div>
@@ -235,7 +244,9 @@ function App() {
           <div className="flex-1 min-h-0 grid grid-cols-2 border-t border-neutral-800">
             <div className="border-r border-neutral-800 flex flex-col min-h-0">
               <div className="px-2 py-1 border-b border-neutral-800 shrink-0">
-                <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Edge Distribution</span>
+                <span className="text-[10px] text-neutral-500 uppercase tracking-wider">
+                  Edge Distribution
+                </span>
               </div>
               <div className="flex-1 min-h-0 p-1">
                 <EdgeDistribution weatherSignals={weatherSignals} />
@@ -245,7 +256,9 @@ function App() {
             <div className="flex flex-col min-h-0">
               <div className="px-2 py-1 border-b border-neutral-800 flex items-center justify-between shrink-0">
                 <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Forecasts</span>
-                <span className="px-1 py-0.5 text-[8px] font-bold uppercase bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">WX</span>
+                <span className="px-1 py-0.5 text-[8px] font-bold uppercase bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                  WX
+                </span>
               </div>
               <div className="flex-1 min-h-0 overflow-y-auto">
                 <WeatherPanel forecasts={weatherForecasts} signals={weatherSignals} />
@@ -284,9 +297,7 @@ function App() {
 
       {/* ===== FOOTER ===== */}
       <footer className="shrink-0 border-t border-neutral-800 px-3 py-0.5 flex items-center justify-between">
-        <span className="text-[10px] text-neutral-700 font-mono">
-          Open-Meteo | Polymarket + Kalshi
-        </span>
+        <span className="text-[10px] text-neutral-700 font-mono">Open-Meteo | Polymarket + Kalshi</span>
         <div className="flex items-center gap-3">
           <RefreshBar interval={10000} />
           <span className="text-[10px] text-neutral-700 font-mono">Weather Temperature</span>

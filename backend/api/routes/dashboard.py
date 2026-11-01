@@ -1,10 +1,8 @@
-from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from backend.config import settings
 from backend.api.schemas import (
     BotStats,
     DashboardData,
@@ -12,6 +10,7 @@ from backend.api.schemas import (
     EventResponse,
     TradeResponse,
 )
+from backend.config import settings
 from backend.models.database import BotState, Trade, get_db
 
 router = APIRouter()
@@ -86,7 +85,7 @@ async def get_trades(
     description="Return cumulative realized P&L and simulated bankroll after each settled trade.",
 )
 async def get_equity_curve(db: Session = Depends(get_db)):
-    trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
+    trades = db.query(Trade).filter(Trade.settled.is_(True)).order_by(Trade.timestamp).all()
 
     curve = []
     cumulative_pnl = 0
@@ -95,12 +94,14 @@ async def get_equity_curve(db: Session = Depends(get_db)):
     for trade in trades:
         if trade.pnl is not None:
             cumulative_pnl += trade.pnl
-            curve.append({
-                "timestamp": trade.timestamp.isoformat(),
-                "pnl": cumulative_pnl,
-                "bankroll": bankroll + cumulative_pnl,
-                "trade_id": trade.id,
-            })
+            curve.append(
+                {
+                    "timestamp": trade.timestamp.isoformat(),
+                    "pnl": cumulative_pnl,
+                    "bankroll": bankroll + cumulative_pnl,
+                    "trade_id": trade.id,
+                }
+            )
 
     return curve
 
@@ -131,7 +132,10 @@ async def get_events(limit: int = Query(50, ge=1, le=500, description="Maximum n
     response_model=DashboardData,
     tags=["Dashboard"],
     summary="Get the complete dashboard payload",
-    description="Return statistics, recent simulated trades, equity, calibration, weather signals, and forecasts in one call.",
+    description=(
+        "Return statistics, recent simulated trades, equity, calibration, "
+        "weather signals, and forecasts in one call."
+    ),
     responses={404: {"description": "Bot state has not been initialized."}},
 )
 async def get_dashboard(db: Session = Depends(get_db)):
@@ -159,17 +163,19 @@ async def get_dashboard(db: Session = Depends(get_db)):
         for t in trades
     ]
 
-    equity_trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
+    equity_trades = db.query(Trade).filter(Trade.settled.is_(True)).order_by(Trade.timestamp).all()
     equity_curve = []
     cumulative_pnl = 0
     for trade in equity_trades:
         if trade.pnl is not None:
             cumulative_pnl += trade.pnl
-            equity_curve.append({
-                "timestamp": trade.timestamp.isoformat(),
-                "pnl": cumulative_pnl,
-                "bankroll": settings.INITIAL_BANKROLL + cumulative_pnl,
-            })
+            equity_curve.append(
+                {
+                    "timestamp": trade.timestamp.isoformat(),
+                    "pnl": cumulative_pnl,
+                    "bankroll": settings.INITIAL_BANKROLL + cumulative_pnl,
+                }
+            )
 
     calibration = _compute_calibration_summary(db)
 
@@ -189,17 +195,19 @@ async def get_dashboard(db: Session = Depends(get_db)):
                     continue
                 forecast = await fetch_ensemble_forecast(city_key)
                 if forecast:
-                    weather_forecasts_data.append({
-                        "city_key": forecast.city_key,
-                        "city_name": forecast.city_name,
-                        "target_date": forecast.target_date.isoformat(),
-                        "mean_high": forecast.mean_high,
-                        "std_high": forecast.std_high,
-                        "mean_low": forecast.mean_low,
-                        "std_low": forecast.std_low,
-                        "num_members": forecast.num_members,
-                        "ensemble_agreement": forecast.ensemble_agreement,
-                    })
+                    weather_forecasts_data.append(
+                        {
+                            "city_key": forecast.city_key,
+                            "city_name": forecast.city_name,
+                            "target_date": forecast.target_date.isoformat(),
+                            "mean_high": forecast.mean_high,
+                            "std_high": forecast.std_high,
+                            "mean_low": forecast.mean_low,
+                            "std_low": forecast.std_low,
+                            "num_members": forecast.num_members,
+                            "ensemble_agreement": forecast.ensemble_agreement,
+                        }
+                    )
         except Exception:
             pass
 

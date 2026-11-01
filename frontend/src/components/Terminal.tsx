@@ -5,7 +5,7 @@ interface LogEntry {
   timestamp: string
   type: 'info' | 'success' | 'warning' | 'error' | 'data' | 'trade' | 'heartbeat'
   message: string
-  data?: Record<string, any>
+  data?: Record<string, unknown>
 }
 
 interface Props {
@@ -53,18 +53,21 @@ export function Terminal({ isRunning, lastRun, onStart, onStop, onScan }: Props)
 
         ws.onopen = () => {
           setWsConnected(true)
-          setLogs(prev => [...prev, {
-            timestamp: new Date().toISOString(),
-            type: 'success',
-            message: 'WebSocket connected'
-          }])
+          setLogs((prev) => [
+            ...prev,
+            {
+              timestamp: new Date().toISOString(),
+              type: 'success',
+              message: 'WebSocket connected',
+            },
+          ])
         }
 
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data)
             if (data.type === 'heartbeat') return // Skip heartbeats
-            setLogs(prev => [...prev.slice(-100), data])
+            setLogs((prev) => [...prev.slice(-100), data])
           } catch (e) {
             console.error('Failed to parse WebSocket message:', e)
           }
@@ -80,7 +83,7 @@ export function Terminal({ isRunning, lastRun, onStart, onStop, onScan }: Props)
         ws.onerror = () => {
           ws.close()
         }
-      } catch (err) {
+      } catch {
         // Fallback to polling if WebSocket fails
         setWsConnected(false)
       }
@@ -118,7 +121,7 @@ export function Terminal({ isRunning, lastRun, onStart, onStop, onScan }: Props)
   // Cursor blink
   useEffect(() => {
     const interval = setInterval(() => {
-      setCursorVisible(v => !v)
+      setCursorVisible((v) => !v)
     }, 500)
     return () => clearInterval(interval)
   }, [])
@@ -133,23 +136,35 @@ export function Terminal({ isRunning, lastRun, onStart, onStop, onScan }: Props)
 
   const getTypeColor = (type: LogEntry['type']) => {
     switch (type) {
-      case 'success': return 'text-green-500'
-      case 'error': return 'text-red-500'
-      case 'warning': return 'text-amber-500'
-      case 'data': return 'text-blue-500'
-      case 'trade': return 'text-purple-500'
-      default: return 'text-neutral-400'
+      case 'success':
+        return 'text-green-500'
+      case 'error':
+        return 'text-red-500'
+      case 'warning':
+        return 'text-amber-500'
+      case 'data':
+        return 'text-blue-500'
+      case 'trade':
+        return 'text-purple-500'
+      default:
+        return 'text-neutral-400'
     }
   }
 
   const getTypePrefix = (type: LogEntry['type']) => {
     switch (type) {
-      case 'success': return '[OK]'
-      case 'error': return '[ERR]'
-      case 'warning': return '[WARN]'
-      case 'data': return '[DATA]'
-      case 'trade': return '[TRADE]'
-      default: return '[INFO]'
+      case 'success':
+        return '[OK]'
+      case 'error':
+        return '[ERR]'
+      case 'warning':
+        return '[WARN]'
+      case 'data':
+        return '[DATA]'
+      case 'trade':
+        return '[TRADE]'
+      default:
+        return '[INFO]'
     }
   }
 
@@ -168,15 +183,11 @@ export function Terminal({ isRunning, lastRun, onStart, onStop, onScan }: Props)
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5">
             <div className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-amber-500'}`} />
-            <span className="text-[10px] text-neutral-600">
-              {wsConnected ? 'WS' : 'POLL'}
-            </span>
+            <span className="text-[10px] text-neutral-600">{wsConnected ? 'WS' : 'POLL'}</span>
           </div>
           <div className="flex items-center gap-1.5">
             {isRunning && <div className="live-dot" />}
-            <span className="text-[10px] text-neutral-600">
-              {isRunning ? 'LIVE' : 'IDLE'}
-            </span>
+            <span className="text-[10px] text-neutral-600">{isRunning ? 'LIVE' : 'IDLE'}</span>
           </div>
         </div>
       </div>
@@ -188,24 +199,16 @@ export function Terminal({ isRunning, lastRun, onStart, onStop, onScan }: Props)
         ) : (
           logs.map((log, i) => (
             <div key={i} className="flex gap-2 text-xs leading-relaxed">
-              <span className="text-neutral-600 tabular-nums shrink-0">
-                {formatTime(log.timestamp)}
-              </span>
-              <span className={`shrink-0 ${getTypeColor(log.type)}`}>
-                {getTypePrefix(log.type)}
-              </span>
-              <span className={getTypeColor(log.type)}>
-                {log.message}
-              </span>
+              <span className="text-neutral-600 tabular-nums shrink-0">{formatTime(log.timestamp)}</span>
+              <span className={`shrink-0 ${getTypeColor(log.type)}`}>{getTypePrefix(log.type)}</span>
+              <span className={getTypeColor(log.type)}>{log.message}</span>
             </div>
           ))
         )}
 
         {/* Cursor line */}
         <div className="flex gap-2 text-xs">
-          <span className="text-neutral-600 tabular-nums">
-            {formatTime(new Date().toISOString())}
-          </span>
+          <span className="text-neutral-600 tabular-nums">{formatTime(new Date().toISOString())}</span>
           <span className="text-green-500">{'>'}</span>
           <span className={`text-green-500 ${cursorVisible ? 'opacity-100' : 'opacity-0'}`}>_</span>
         </div>
@@ -241,9 +244,7 @@ export function Terminal({ isRunning, lastRun, onStart, onStop, onScan }: Props)
           <span className="text-[10px] text-neutral-600">
             {lastRun ? `Last: ${formatTime(lastRun)}` : 'No scans'}
           </span>
-          <span className="text-[10px] text-neutral-600 tabular-nums">
-            {logs.length} entries
-          </span>
+          <span className="text-[10px] text-neutral-600 tabular-nums">{logs.length} entries</span>
         </div>
       </div>
     </div>

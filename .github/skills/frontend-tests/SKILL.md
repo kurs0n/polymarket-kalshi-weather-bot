@@ -7,19 +7,16 @@ description: 'Use when adding, running, debugging, or reviewing tests for the Re
 
 ## Current Test Setup
 
-The frontend is React 18 + TypeScript + Vite, but `frontend/package.json` currently defines only `dev`, `build`, and `preview`; there is no frontend test runner, test script, or existing frontend test suite. Do not claim that `npm test` works or that a build is a test run.
-
-For the current checkout, the available frontend verification is:
+The frontend is React 18 + TypeScript + Vite with Vitest, React Testing Library, and `@testing-library/user-event`. Tests live in `frontend/tests/` and use jsdom via `frontend/vite.config.ts`.
 
 ```sh
-cd frontend && npm run build
+cd frontend && npm test        # single run (used by CI and ./run_tests.sh)
+cd frontend && npm run test:watch
 ```
-
-This runs strict TypeScript checking followed by a Vite production build.
 
 ## Adding Tests
 
-When the task includes introducing frontend test infrastructure, use Vite-compatible Vitest with React Testing Library and `@testing-library/user-event` for component behavior. Add the required development dependencies, a test script, and a minimal configuration consistent with the existing Vite/TypeScript setup. Keep that infrastructure change explicit; do not assume these packages are already installed.
+Follow the existing component-test patterns and mock the API boundary (`src/api.ts`) or heavy visualization libraries rather than calling a live backend. Keep new infrastructure changes explicit and consistent with the current Vite/TypeScript setup.
 
 Prefer tests that exercise observable dashboard behavior:
 
@@ -32,6 +29,7 @@ Keep tests close to the component or feature they cover, use accessible roles/na
 
 ## Verification
 
-- Existing check: `cd frontend && npm run build`.
-- After adding a test runner, document and run its exact command (for example `npm test`) alongside the build.
-- The frontend currently has no configured lint command or browser end-to-end test runner; do not report either as run unless the project adds one.
+- Run `cd frontend && npm test` for the suite.
+- Run `cd frontend && npm run lint` and `cd frontend && npm run format:check` for static checks.
+- Run `cd frontend && npm run build` for the strict TypeScript check plus Vite production build.
+- There is no browser end-to-end test runner; do not report one as run unless the project adds it.

@@ -10,10 +10,15 @@ describe('Terminal', () => {
     const onStop = vi.fn()
     const onScan = vi.fn()
 
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
-      ok: true,
-      json: async () => []
-    })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: async () => [],
+        })
+      )
+    )
 
     class MockWebSocket {
       static instances: MockWebSocket[] = []
@@ -33,7 +38,7 @@ describe('Terminal', () => {
       }
     }
 
-    vi.stubGlobal('WebSocket', MockWebSocket as any)
+    vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket)
 
     render(
       <Terminal

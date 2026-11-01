@@ -32,10 +32,9 @@ def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
     accuracy = correct / total_with_outcome if total_with_outcome > 0 else 0.0
 
     avg_predicted_edge = sum(abs(s.edge) for s in settled_signals) / total_with_outcome
-    avg_actual_edge = sum(
-        abs(s.edge) if s.outcome_correct else -abs(s.edge)
-        for s in settled_signals
-    ) / total_with_outcome
+    avg_actual_edge = (
+        sum(abs(s.edge) if s.outcome_correct else -abs(s.edge) for s in settled_signals) / total_with_outcome
+    )
 
     brier_sum = 0.0
     for s in settled_signals:

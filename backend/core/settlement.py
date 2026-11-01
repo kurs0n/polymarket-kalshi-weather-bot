@@ -1,12 +1,14 @@
 """Trade settlement logic for weather markets on Polymarket and Kalshi."""
-import httpx
+
 import json
 import logging
 from datetime import datetime
-from typing import Optional, List, Tuple
+from typing import List, Optional, Tuple
+
+import httpx
 from sqlalchemy.orm import Session
 
-from backend.models.database import Trade, BotState, Signal
+from backend.models.database import BotState, Signal, Trade
 from backend.models.outcomes import Outcome
 
 logger = logging.getLogger("trading_bot")
@@ -22,10 +24,7 @@ async def fetch_polymarket_resolution(market_id: str, event_slug: Optional[str] 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             if event_slug:
-                response = await client.get(
-                    "https://gamma-api.polymarket.com/events",
-                    params={"slug": event_slug}
-                )
+                response = await client.get("https://gamma-api.polymarket.com/events", params={"slug": event_slug})
                 response.raise_for_status()
                 events = response.json()
 
@@ -55,14 +54,8 @@ async def _search_market_in_events(market_id: str) -> Tuple[bool, Optional[float
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             for closed in [True, False]:
-                params = {
-                    "closed": str(closed).lower(),
-                    "limit": 200
-                }
-                response = await client.get(
-                    "https://gamma-api.polymarket.com/events",
-                    params=params
-                )
+                params = {"closed": str(closed).lower(), "limit": 200}
+                response = await client.get("https://gamma-api.polymarket.com/events", params=params)
                 response.raise_for_status()
                 events = response.json()
 
@@ -141,7 +134,7 @@ async def check_weather_settlement(trade: Trade) -> Tuple[bool, Optional[float],
     Check if a weather trade's market has settled.
     Routes to the correct platform's resolution method.
     """
-    platform = getattr(trade, 'platform', 'polymarket') or 'polymarket'
+    platform = getattr(trade, "platform", "polymarket") or "polymarket"
 
     if platform == "kalshi":
         is_resolved, settlement_value = await _fetch_kalshi_resolution(trade.market_ticker)
@@ -189,7 +182,7 @@ async def _fetch_kalshi_resolution(ticker: str) -> Tuple[bool, Optional[float]]:
 async def settle_pending_trades(db: Session) -> List[Trade]:
     """Process all pending weather trades for settlement."""
     try:
-        pending = db.query(Trade).filter(Trade.settled == False).all()
+        pending = db.query(Trade).filter(Trade.settled.is_(False)).all()
     except Exception as e:
         logger.error(f"Failed to query pending trades: {e}")
         return []
@@ -225,7 +218,7 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
                     if linked_signal:
                         actual_outcome = "yes" if settlement_value == 1.0 else "no"
                         linked_signal.actual_outcome = actual_outcome
-                        linked_signal.outcome_correct = (linked_signal.direction == actual_outcome)
+                        linked_signal.outcome_correct = linked_signal.direction == actual_outcome
                         linked_signal.settlement_value = settlement_value
                         linked_signal.settled_at = datetime.utcnow()
         except Exception as e:

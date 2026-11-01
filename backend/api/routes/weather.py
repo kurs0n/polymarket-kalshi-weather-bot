@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
-from backend.config import settings
 from backend.api.schemas import WeatherForecastResponse, WeatherMarketResponse, WeatherSignalResponse
+from backend.config import settings
 
 router = APIRouter()
 
@@ -11,7 +11,9 @@ router = APIRouter()
     response_model=list[WeatherForecastResponse],
     tags=["Weather"],
     summary="Get configured city forecasts",
-    description="Return Open-Meteo GFS ensemble forecasts for configured cities. Temperatures are in degrees Fahrenheit.",
+    description=(
+        "Return Open-Meteo GFS ensemble forecasts for configured cities. " "Temperatures are in degrees Fahrenheit."
+    ),
 )
 async def get_weather_forecasts():
     """Get ensemble forecasts for configured cities."""

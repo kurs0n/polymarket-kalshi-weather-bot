@@ -17,12 +17,24 @@ function getBucket(edge: number): string {
   return '20%+'
 }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+interface TooltipItem {
+  name?: string
+  value?: number | string
+  color?: string
+}
+
+interface CustomTooltipProps {
+  active?: boolean
+  payload?: TooltipItem[]
+  label?: string | number
+}
+
+const CustomTooltip = ({ active, payload, label }: CustomTooltipProps) => {
   if (!active || !payload || !payload.length) return null
   return (
     <div className="bg-neutral-900 border border-neutral-800 px-2 py-1.5">
       <p className="text-[10px] text-neutral-400 mb-1">{label}</p>
-      {payload.map((p: any) => (
+      {payload.map((p) => (
         <p key={p.name} className="text-[10px] tabular-nums" style={{ color: p.color }}>
           {p.name}: {p.value}
         </p>
@@ -34,14 +46,16 @@ const CustomTooltip = ({ active, payload, label }: any) => {
 export function EdgeDistribution({ weatherSignals }: Props) {
   const data = useMemo(() => {
     const counts: Record<string, number> = {}
-    BUCKETS.forEach(b => { counts[b] = 0 })
+    BUCKETS.forEach((b) => {
+      counts[b] = 0
+    })
 
-    weatherSignals.forEach(s => {
+    weatherSignals.forEach((s) => {
       const bucket = getBucket(s.edge)
       counts[bucket]++
     })
 
-    return BUCKETS.map(bucket => ({
+    return BUCKETS.map((bucket) => ({
       bucket,
       Signals: counts[bucket],
     }))

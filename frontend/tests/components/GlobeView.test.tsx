@@ -5,26 +5,26 @@ import { GlobeView } from '../../src/components/GlobeView'
 import type { WeatherForecast, WeatherSignal } from '../../src/types'
 
 vi.mock('react-globe.gl', () => ({
-  default: forwardRef<object, {
-    htmlElementsData: object[]
-    htmlElement: (marker: object) => HTMLElement
-  }>(({ htmlElementsData, htmlElement }, ref) => {
+  default: forwardRef<
+    object,
+    {
+      htmlElementsData: object[]
+      htmlElement: (marker: object) => HTMLElement
+    }
+  >(({ htmlElementsData, htmlElement }, ref) => {
     useImperativeHandle(ref, () => ({
       pointOfView: vi.fn(),
-      controls: () => ({ autoRotate: false, autoRotateSpeed: 0, enableZoom: true })
+      controls: () => ({ autoRotate: false, autoRotateSpeed: 0, enableZoom: true }),
     }))
 
     return (
       <div data-testid="globe">
         {htmlElementsData.map((marker, index) => (
-          <div
-            key={index}
-            dangerouslySetInnerHTML={{ __html: htmlElement(marker).outerHTML }}
-          />
+          <div key={index} dangerouslySetInnerHTML={{ __html: htmlElement(marker).outerHTML }} />
         ))}
       </div>
     )
-  })
+  }),
 }))
 
 const forecast: WeatherForecast = {
@@ -36,7 +36,7 @@ const forecast: WeatherForecast = {
   mean_low: 61,
   std_low: 3,
   num_members: 30,
-  ensemble_agreement: 0.8
+  ensemble_agreement: 0.8,
 }
 
 const signals: WeatherSignal[] = [
@@ -58,7 +58,7 @@ const signals: WeatherSignal[] = [
     ensemble_std: 3,
     ensemble_members: 30,
     actionable: true,
-    platform: 'kalshi'
+    platform: 'kalshi',
   },
   {
     market_id: 'NYC-HIGH-75',
@@ -78,8 +78,8 @@ const signals: WeatherSignal[] = [
     ensemble_std: 3,
     ensemble_members: 30,
     actionable: false,
-    platform: 'kalshi'
-  }
+    platform: 'kalshi',
+  },
 ]
 
 describe('GlobeView', () => {

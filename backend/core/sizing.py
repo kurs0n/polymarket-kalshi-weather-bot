@@ -1,12 +1,10 @@
 """Shared edge and Kelly position sizing helpers."""
+
 from backend.config import settings
 from backend.models.outcomes import Outcome
 
 
-def calculate_edge(
-    model_prob: float,
-    market_price: float
-) -> tuple[float, Outcome]:
+def calculate_edge(model_prob: float, market_price: float) -> tuple[float, Outcome]:
     """
     Calculate edge and determine direction.
 
@@ -24,11 +22,7 @@ def calculate_edge(
 
 
 def calculate_kelly_size(
-    edge: float,
-    probability: float,
-    market_price: float,
-    direction: Outcome | str,
-    bankroll: float
+    edge: float, probability: float, market_price: float, direction: Outcome | str, bankroll: float
 ) -> float:
     """
     Calculate position size using fractional Kelly criterion.

@@ -1,6 +1,6 @@
 """Kalshi API client with RSA-PSS signature authentication."""
+
 import base64
-import hashlib
 import logging
 import time
 from pathlib import Path

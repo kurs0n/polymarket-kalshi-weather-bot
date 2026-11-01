@@ -1,7 +1,8 @@
 """Kalshi weather temperature market fetcher."""
+
 import logging
 import re
-from datetime import date, datetime
+from datetime import date
 from typing import Dict, List, Optional
 
 from backend.data.kalshi_client import KalshiClient, kalshi_credentials_present
@@ -30,8 +31,18 @@ CITY_NAMES: Dict[str, str] = {
 
 # Month abbreviation mapping for ticker parsing
 MONTH_ABBR = {
-    "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
-    "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+    "JAN": 1,
+    "FEB": 2,
+    "MAR": 3,
+    "APR": 4,
+    "MAY": 5,
+    "JUN": 6,
+    "JUL": 7,
+    "AUG": 8,
+    "SEP": 9,
+    "OCT": 10,
+    "NOV": 11,
+    "DEC": 12,
 }
 
 
@@ -46,7 +57,7 @@ def _parse_kalshi_ticker(ticker: str, city_key: str) -> Optional[dict]:
     """
     # Match: SERIES-YYMONDD-B/Tnn.n
     match = re.match(
-        r'^[A-Z]+-(\d{2})([A-Z]{3})(\d{2})-([BT])([\d.]+)$',
+        r"^[A-Z]+-(\d{2})([A-Z]{3})(\d{2})-([BT])([\d.]+)$",
         ticker,
     )
     if not match:
@@ -142,21 +153,23 @@ async def fetch_kalshi_weather_markets(
 
                     volume = float(m.get("volume", 0) or 0)
 
-                    markets.append(WeatherMarket(
-                        slug=ticker,
-                        market_id=ticker,
-                        platform="kalshi",
-                        title=m.get("title", ticker),
-                        city_key=city_key,
-                        city_name=city_name,
-                        target_date=parsed["target_date"],
-                        threshold_f=parsed["threshold_f"],
-                        metric=parsed["metric"],
-                        direction=parsed["direction"],
-                        yes_price=yes_price,
-                        no_price=no_price,
-                        volume=volume,
-                    ))
+                    markets.append(
+                        WeatherMarket(
+                            slug=ticker,
+                            market_id=ticker,
+                            platform="kalshi",
+                            title=m.get("title", ticker),
+                            city_key=city_key,
+                            city_name=city_name,
+                            target_date=parsed["target_date"],
+                            threshold_f=parsed["threshold_f"],
+                            metric=parsed["metric"],
+                            direction=parsed["direction"],
+                            yes_price=yes_price,
+                            no_price=no_price,
+                            volume=volume,
+                        )
+                    )
 
                 # Handle pagination
                 cursor = data.get("cursor")

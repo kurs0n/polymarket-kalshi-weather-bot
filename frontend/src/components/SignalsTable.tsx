@@ -31,11 +31,7 @@ interface UnifiedSignal {
 function PlatformBadge({ platform }: { platform: string }) {
   const style = platformStyles[platform.toLowerCase()]
   if (!style) return null
-  return (
-    <span className={`platform-badge ${style.badge}`}>
-      {style.icon}
-    </span>
-  )
+  return <span className={`platform-badge ${style.badge}`}>{style.icon}</span>
 }
 
 function EdgeBar({ edge }: { edge: number }) {
@@ -55,7 +51,7 @@ export function SignalsTable({ weatherSignals, onSimulateTrade, isSimulating }: 
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
 
   const unified: UnifiedSignal[] = useMemo(() => {
-    return weatherSignals.map(s => ({
+    return weatherSignals.map((s) => ({
       key: `wx-${s.market_id}`,
       ticker: s.market_id,
       title: `${s.city_name} ${s.metric} ${s.direction} ${s.threshold_f}F`,
@@ -86,12 +82,19 @@ export function SignalsTable({ weatherSignals, onSimulateTrade, isSimulating }: 
       let aVal: number, bVal: number
       switch (sortKey) {
         case 'edge':
-          aVal = Math.abs(a.edge); bVal = Math.abs(b.edge); break
+          aVal = Math.abs(a.edge)
+          bVal = Math.abs(b.edge)
+          break
         case 'model_probability':
-          aVal = a.modelProb; bVal = b.modelProb; break
+          aVal = a.modelProb
+          bVal = b.modelProb
+          break
         case 'suggested_size':
-          aVal = a.suggestedSize; bVal = b.suggestedSize; break
-        default: return 0
+          aVal = a.suggestedSize
+          bVal = b.suggestedSize
+          break
+        default:
+          return 0
       }
       return sortDir === 'asc' ? aVal - bVal : bVal - aVal
     })
@@ -99,9 +102,11 @@ export function SignalsTable({ weatherSignals, onSimulateTrade, isSimulating }: 
 
   const SortIcon = ({ column }: { column: SortKey }) => {
     if (sortKey !== column) return <ArrowUpDown className="w-2.5 h-2.5 text-neutral-600" />
-    return sortDir === 'asc'
-      ? <ArrowUp className="w-2.5 h-2.5 text-cyan-400" />
-      : <ArrowDown className="w-2.5 h-2.5 text-cyan-400" />
+    return sortDir === 'asc' ? (
+      <ArrowUp className="w-2.5 h-2.5 text-cyan-400" />
+    ) : (
+      <ArrowDown className="w-2.5 h-2.5 text-cyan-400" />
+    )
   }
 
   if (unified.length === 0) {
@@ -174,14 +179,18 @@ export function SignalsTable({ weatherSignals, onSimulateTrade, isSimulating }: 
                   </span>
                 </td>
                 <td className="py-1 px-1.5 text-center">
-                  <span className={`text-[10px] font-semibold uppercase ${isYes ? 'text-green-500' : 'text-red-500'}`}>
+                  <span
+                    className={`text-[10px] font-semibold uppercase ${isYes ? 'text-green-500' : 'text-red-500'}`}
+                  >
                     {sig.direction}
                   </span>
                 </td>
                 <td className="py-1 px-1.5 text-right">
-                  <span className={`font-semibold tabular-nums ${
-                    sig.edge > 0 ? 'text-green-500' : sig.edge < 0 ? 'text-red-500' : 'text-neutral-600'
-                  }`}>
+                  <span
+                    className={`font-semibold tabular-nums ${
+                      sig.edge > 0 ? 'text-green-500' : sig.edge < 0 ? 'text-red-500' : 'text-neutral-600'
+                    }`}
+                  >
                     {sig.edge === 0 ? '-' : `${Math.abs(sig.edge * 100).toFixed(1)}%`}
                   </span>
                 </td>
@@ -197,7 +206,10 @@ export function SignalsTable({ weatherSignals, onSimulateTrade, isSimulating }: 
                 <td className="py-1 px-1.5 text-right">
                   {sig.actionable && (
                     <button
-                      onClick={(e) => { e.stopPropagation(); onSimulateTrade(sig.ticker) }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onSimulateTrade(sig.ticker)
+                      }}
                       disabled={isSimulating}
                       className="px-1.5 py-0.5 text-[8px] font-medium uppercase bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/20 disabled:opacity-50"
                     >
